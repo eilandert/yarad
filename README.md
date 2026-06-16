@@ -65,7 +65,7 @@ docker run -d --name yarad \
     -e YARAD_RULES_DIR=/rules \     # …and compile this dir instead
     -v "$PWD/myrules:/rules:ro" \
     -p 8079:8079 \
-    eilandert/yarad
+    eilandert/rspamd-yarad
 
 # ask it something:
 printf 'hello' | curl -s -H 'X-YARAD-Token: changeme' \
@@ -145,7 +145,7 @@ detector). CI fails on a bad commit before an image is ever published:
 docker build --target test -f docker/Dockerfile -t yarad-test .
 
 # the production image (distroless, nonroot, ~74 MB):
-docker build --target final -f docker/Dockerfile -t eilandert/yarad \
+docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
     --build-arg CACHEBUST=$(date +%s) .
 ```
 
@@ -169,7 +169,7 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
   — the same out-of-process pattern in a fuller rspamd deployment.
 * **Article:** [YARA malware scanning in rspamd](https://deb.myguard.nl/2026/06/yara-malware-scanning-rspamd-yarad/)
   — the why and how, on deb.myguard.nl.
-* **Docker Hub:** `eilandert/yarad` *(TODO: link once the repo page exists)*.
+* **Docker Hub:** `eilandert/rspamd-yarad` *(TODO: link once the repo page exists)*.
 
 ## License
 

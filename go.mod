@@ -1,4 +1,4 @@
-module github.com/eilandert/yarad
+module github.com/eilandert/rspamd-yarad
 
 go 1.25
 

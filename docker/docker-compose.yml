@@ -4,7 +4,7 @@
 # the yara.lua plugin targets the IPv4 directly).
 services:
   yarad:
-    image: eilandert/yarad:latest
+    image: eilandert/rspamd-yarad:latest
     container_name: yarad
     restart: unless-stopped
     mem_limit: 256m

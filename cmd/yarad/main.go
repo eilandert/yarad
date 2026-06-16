@@ -29,7 +29,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/eilandert/yarad/internal/yarad"
+	"github.com/eilandert/rspamd-yarad/internal/yarad"
 )
 
 var version = "dev"
