@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
 
 func get(s *Server, path string) *httptest.ResponseRecorder {
@@ -79,6 +83,98 @@ func TestScanClientCanceled(t *testing.T) {
 	}
 }
 
+type blockingBody struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingBody) Read([]byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return 0, io.ErrUnexpectedEOF
+}
+
+// A slow authenticated upload may hold an admission/buffer slot, but it must not
+// hold the scarce scan-CPU slot before the body has been read. Otherwise one
+// slow client per scan slot can starve real scans.
+func TestSlowBodyDoesNotHoldScanSlot(t *testing.T) {
+	eng := &fakeEngine{count: 1}
+	cfg := &Config{
+		Token:          "tok",
+		MaxConcurrent:  1,
+		MaxInflight:    2,
+		MaxBody:        1 << 20,
+		BackendTimeout: 20 * time.Millisecond,
+		CacheTTL:       0,
+	}
+	cfg.sanitize()
+	s := NewServer(cfg, eng)
+
+	body := &blockingBody{started: make(chan struct{}), release: make(chan struct{})}
+	r := httptest.NewRequest(http.MethodPost, "/scan", body)
+	r.Header.Set("Content-Length", "4")
+	r.Header.Set("X-YARAD-Token", "tok")
+
+	done := make(chan struct{})
+	go func() {
+		s.ServeHTTP(httptest.NewRecorder(), r)
+		close(done)
+	}()
+
+	select {
+	case <-body.started:
+	case <-time.After(time.Second):
+		t.Fatal("slow request did not reach body read")
+	}
+
+	w := post(s, "fast", map[string]string{"X-YARAD-Token": "tok"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("fast scan behind slow body = %d, want 200", w.Code)
+	}
+	if got := eng.scans.Load(); got != 1 {
+		t.Fatalf("fast request did not scan exactly once; scans=%d", got)
+	}
+
+	close(body.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("slow request did not finish after release")
+	}
+}
+
+func TestMetricsAuth(t *testing.T) {
+	s := newTestServer(&fakeEngine{count: 1}, "tok")
+	// Default: /metrics and /version are open.
+	if w := get(s, "/metrics"); w.Code != http.StatusOK {
+		t.Errorf("metrics open by default: %d", w.Code)
+	}
+	// Enabled: 401 without the token.
+	s.cfg.MetricsAuth = true
+	if w := get(s, "/metrics"); w.Code != http.StatusUnauthorized {
+		t.Errorf("metrics unauth: %d want 401", w.Code)
+	}
+	if w := get(s, "/version"); w.Code != http.StatusUnauthorized {
+		t.Errorf("version unauth: %d want 401", w.Code)
+	}
+	// With the token: allowed.
+	r := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	r.Header.Set("X-YARAD-Token", "tok")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("metrics authed: %d want 200", w.Code)
+	}
+	// Probes stay open regardless.
+	if w := get(s, "/health"); w.Code != http.StatusOK {
+		t.Errorf("health must stay open under metrics auth: %d", w.Code)
+	}
+	if w := get(s, "/ready"); w.Code != http.StatusOK {
+		t.Errorf("ready must stay open under metrics auth: %d", w.Code)
+	}
+}
+
 func TestShutdownSetsDraining(t *testing.T) {
 	s := newTestServer(&fakeEngine{count: 1}, "tok")
 	// Shutdown before ListenAndServe has stored a server: returns nil, still
@@ -109,10 +205,11 @@ func (f *fakeEngine) Scan(buf []byte) ([]Match, error) {
 	}
 	return f.matches, f.err
 }
-func (f *fakeEngine) RuleCount() int64               { return f.count }
-func (f *fakeEngine) Fingerprint() string            { return f.fp }
-func (f *fakeEngine) ExtractMetrics() ExtractMetrics { return ExtractMetrics{} }
-func (f *fakeEngine) ReloadMetrics() ReloadMetrics   { return ReloadMetrics{} }
+func (f *fakeEngine) RuleCount() int64                { return f.count }
+func (f *fakeEngine) Fingerprint() string             { return f.fp }
+func (f *fakeEngine) ExtractMetrics() ExtractMetrics  { return ExtractMetrics{} }
+func (f *fakeEngine) ReloadMetrics() ReloadMetrics    { return ReloadMetrics{} }
+func (f *fakeEngine) URLhausMetrics() urlhaus.Metrics { return urlhaus.Metrics{} }
 
 func newTestServer(eng ScanEngine, token string) *Server {
 	cfg := &Config{Token: token, MaxConcurrent: 4, MaxBody: 1 << 20, BackendTimeout: 0}

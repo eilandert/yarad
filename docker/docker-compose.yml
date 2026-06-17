@@ -28,7 +28,8 @@ services:
 
       # --- Limits -----------------------------------------------------------
       # YARAD_MAX_CONCURRENT: "auto"   # in-flight scan cap; "auto"=CPU count, or a number
-      # YARAD_SCAN_TIMEOUT: "10"       # per-scan libyara budget (s)
+      # YARAD_BACKEND_TIMEOUT: "1"     # queue/admission wait budget (s)
+      # YARAD_SCAN_TIMEOUT: "8"        # per-scan libyara budget (s)
 
       # --- Auth (required) --------------------------------------------------
       # yarad refuses every /scan (503) until a token is set. The rspamd plugin

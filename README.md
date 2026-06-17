@@ -116,8 +116,8 @@ over env, env wins over the default.
 | `YARAD_TOKEN[_FILE]` | — | shared secret for `/scan`; unset ⇒ every POST is `503` |
 | `YARAD_RULES_DIR` | `/rules` | directory of `*.yar`/`*.yara` compiled at boot and on SIGHUP |
 | `YARAD_RULES` | — | a precompiled `.yac` bundle; loaded instead of `RULES_DIR` (faster start) |
-| `YARAD_SCAN_TIMEOUT` | `10` (s) | per-scan libyara budget |
-| `YARAD_BACKEND_TIMEOUT` | `6` (s) | per-request budget / how long to wait for a concurrency slot |
+| `YARAD_SCAN_TIMEOUT` | `8` (s) | per-scan libyara budget |
+| `YARAD_BACKEND_TIMEOUT` | `1` (s) | queue budget / how long to wait for an admission or scan slot |
 | `YARAD_MAX_CONCURRENT` | `auto` (CPU count) | max concurrent libyara scans (CPU gate); `auto` = CPU count |
 | `YARAD_MAX_INFLIGHT` | `auto` (2× concurrent) | max in-flight requests/buffers (admission gate); kept above the scan gate so a slow body/Redis can't starve scan slots |
 | `YARAD_MAX_BODY` | `8388608` (8 MiB) | max request body, in bytes |
@@ -125,6 +125,10 @@ over env, env wins over the default.
 | `YARAD_CACHE_SIZE` | `65536` | in-memory LRU entries |
 | `YARAD_REDIS_URL` | — | optional shared L2 cache, e.g. `redis://host:6379/6` |
 | `YARAD_REDIS_PREFIX` | `yara:scan:` | Redis key prefix |
+| `YARAD_METRICS_AUTH` | off | require the token for `/metrics` and `/version` (`/health` & `/ready` stay open) |
+| `YARAD_URLHAUS_KEY[_FILE]` | — | abuse.ch Auth-Key; enables the URLhaus malware-URL lookup (see below) |
+| `YARAD_URLHAUS_REFRESH` | `900` (s) | URLhaus feed refresh interval (floor 5 min) |
+| `YARAD_URLHAUS_MAX_URLS` | `64` | max URLs examined per message |
 | `YARAD_VERBOSE` | off | log one line per request |
 | `YARAD_LOG_STDOUT` | off | info/access logs to stdout (errors always go to stderr) |
 
@@ -182,6 +186,21 @@ one `YARAD_SCAN_TIMEOUT` budget across raw + every macro stream, so a document
 crafted with hundreds of modules can't monopolize a worker. Encrypted
 (ECMA-376) OOXML is detected and counted but not decrypted.
 
+## URLhaus malware-URL lookup (optional)
+
+Set an abuse.ch Auth-Key (free, <https://auth.abuse.ch/>) via `YARAD_URLHAUS_KEY`
+to also check every message — and every decompressed macro/RTF stream — for URLs
+that appear in the [URLhaus](https://urlhaus.abuse.ch/) feed of known
+malware-distribution links. The feed is downloaded once per `YARAD_URLHAUS_REFRESH`
+(floor 5 min, fair-use) into an in-memory set; lookups are local map hits, never a
+per-message API call, and a failed refresh keeps the previous set. Cheap defanging
+(`hxxp`, `host[.]tld`, `(dot)`) catches URLs hidden in document code.
+
+Hits come back as matches with rule names `URLHAUS_MALWARE_URL` (exact),
+`URLHAUS_MALWARE_HOST` (known-bad host), and a `_DEOBF` variant when only found
+after defanging. The rspamd plugin routes these to a separate `URLHAUS_MALWARE_URL`
+symbol so they score independently of YARA rules.
+
 ## Build & test
 
 The tests need real libyara, so they run **inside the image build** (CGO, race
@@ -223,4 +242,3 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
 [MIT](LICENSE). Baked rule sets keep their own licenses (YARA-Forge core,
 signature-base, ANY.RUN, bartblaze = permissive; Didier Stevens = public
 domain).
-

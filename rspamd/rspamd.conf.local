@@ -25,8 +25,8 @@ yara {
   # token = "change-me";
   token_file = "/etc/rspamd/yarad.token";
   # Must cover yarad's worst case = YARAD_BACKEND_TIMEOUT + YARAD_SCAN_TIMEOUT.
-  # Keep yarad's two timeouts summing to <= this (e.g. on yarad set
-  # BACKEND_TIMEOUT=2 + SCAN_TIMEOUT=8 = 10s) so scans aren't abandoned mid-run.
+  # Defaults are aligned: BACKEND_TIMEOUT=1 + SCAN_TIMEOUT=8 = 9s, leaving a
+  # little HTTP/JSON overhead before this timeout expires.
   timeout = 10.0;
   max_size = 8388608;
   symbol = "YARA_MATCH";

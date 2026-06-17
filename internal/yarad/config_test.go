@@ -24,7 +24,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if c.MaxConcurrent != runtime.NumCPU() || c.MaxBody != 8*1024*1024 {
 		t.Errorf("concurrency/body = %d/%d (want concurrency=%d)", c.MaxConcurrent, c.MaxBody, runtime.NumCPU())
 	}
-	if c.BackendTimeout != 6*time.Second || c.ScanTimeout != 10*time.Second {
+	if c.BackendTimeout != time.Second || c.ScanTimeout != 8*time.Second {
 		t.Errorf("timeouts = %s/%s", c.BackendTimeout, c.ScanTimeout)
 	}
 	if c.RulesDir != "/rules" {
@@ -98,8 +98,8 @@ func TestEnvOrFile(t *testing.T) {
 func TestSanitizeClamps(t *testing.T) {
 	c := &Config{Host: "x", Port: 0, MaxConcurrent: -1, BackendTimeout: 0, ScanTimeout: -1, MaxBody: 0}
 	c.sanitize()
-	if c.Port != 8079 || c.MaxConcurrent != runtime.NumCPU() || c.BackendTimeout != 6*time.Second ||
-		c.ScanTimeout != 10*time.Second || c.MaxBody != 8*1024*1024 {
+	if c.Port != 8079 || c.MaxConcurrent != runtime.NumCPU() || c.BackendTimeout != time.Second ||
+		c.ScanTimeout != 8*time.Second || c.MaxBody != 8*1024*1024 {
 		t.Errorf("sanitize did not clamp: %+v (want concurrency=%d)", c, runtime.NumCPU())
 	}
 }

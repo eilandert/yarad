@@ -22,7 +22,7 @@ import (
 type Config struct {
 	Host           string        // YARAD_HOST            (default 0.0.0.0)
 	Port           int           // YARAD_PORT            (default 8079)
-	BackendTimeout time.Duration // YARAD_BACKEND_TIMEOUT (default 6s)
+	BackendTimeout time.Duration // YARAD_BACKEND_TIMEOUT (default 1s)
 	MaxConcurrent  int           // YARAD_MAX_CONCURRENT  (default "auto" = CPU count)
 	MaxInflight    int           // YARAD_MAX_INFLIGHT    (default 2×MaxConcurrent); admission gate
 	MaxBody        int64         // YARAD_MAX_BODY bytes  (default 8 MiB)
@@ -37,7 +37,7 @@ type Config struct {
 
 	// ScanTimeout bounds a single libyara scan so a pathological rule/input
 	// cannot stall a worker (YARA's own internal timeout, seconds).
-	ScanTimeout time.Duration // YARAD_SCAN_TIMEOUT (default 10s)
+	ScanTimeout time.Duration // YARAD_SCAN_TIMEOUT (default 8s)
 
 	// Verdict cache. At high volume mail is heavily duplicated (bulk campaigns,
 	// one body to N recipients, MTA retries), so caching SHA256(body) -> matches
@@ -48,8 +48,14 @@ type Config struct {
 	RedisURL    string        // YARAD_REDIS_URL    (empty -> in-process LRU only)
 	RedisPrefix string        // YARAD_REDIS_PREFIX (default yara:scan:)
 
-	Verbose   bool // YARAD_VERBOSE
-	LogStdout bool // YARAD_LOG_STDOUT — info/access to stdout; errors stay stderr
+	Verbose     bool // YARAD_VERBOSE
+	LogStdout   bool // YARAD_LOG_STDOUT — info/access to stdout; errors stay stderr
+	MetricsAuth bool // YARAD_METRICS_AUTH — require the token for /metrics and /version
+
+	// URLhaus malware-URL lookup. Disabled unless an abuse.ch Auth-Key is set.
+	URLhausKey     string        // YARAD_URLHAUS_KEY[_FILE] — abuse.ch Auth-Key
+	URLhausRefresh time.Duration // YARAD_URLHAUS_REFRESH (default 15m, floor 5m)
+	URLhausMaxURLs int           // YARAD_URLHAUS_MAX_URLS  (per message, default 64)
 
 	Version string // build version string, set by main (not from env); for /version
 }
@@ -60,20 +66,24 @@ func LoadConfig() *Config {
 	c := &Config{
 		Host:           envStr("YARAD_HOST", "0.0.0.0"),
 		Port:           envInt("YARAD_PORT", 8079),
-		BackendTimeout: envDur("YARAD_BACKEND_TIMEOUT", 6),
+		BackendTimeout: envDur("YARAD_BACKEND_TIMEOUT", 1),
 		MaxConcurrent:  envIntAuto("YARAD_MAX_CONCURRENT", runtime.NumCPU()),
 		MaxInflight:    envIntAuto("YARAD_MAX_INFLIGHT", 0), // 0 -> sanitize sets 2×MaxConcurrent
 		MaxBody:        envInt64("YARAD_MAX_BODY", 8*1024*1024),
 		Token:          envOrFile("YARAD_TOKEN"),
 		RulesDir:       envStr("YARAD_RULES_DIR", "/rules"),
 		RulesPath:      strings.TrimSpace(os.Getenv("YARAD_RULES")),
-		ScanTimeout:    envDur("YARAD_SCAN_TIMEOUT", 10),
+		ScanTimeout:    envDur("YARAD_SCAN_TIMEOUT", 8),
 		CacheTTL:       envDur("YARAD_CACHE_TTL", 600),
 		CacheSize:      envInt("YARAD_CACHE_SIZE", 65536),
 		RedisURL:       strings.TrimSpace(os.Getenv("YARAD_REDIS_URL")),
 		RedisPrefix:    envStr("YARAD_REDIS_PREFIX", "yara:scan:"),
 		Verbose:        envBool("YARAD_VERBOSE"),
 		LogStdout:      envBool("YARAD_LOG_STDOUT"),
+		MetricsAuth:    envBool("YARAD_METRICS_AUTH"),
+		URLhausKey:     envOrFile("YARAD_URLHAUS_KEY"),
+		URLhausRefresh: envDur("YARAD_URLHAUS_REFRESH", 900),
+		URLhausMaxURLs: envInt("YARAD_URLHAUS_MAX_URLS", 64),
 	}
 	c.sanitize()
 	return c
@@ -100,12 +110,12 @@ func (c *Config) sanitize() {
 		c.Port = clamp("YARAD_PORT", c.Port, 8079)
 	}
 	if c.BackendTimeout <= 0 {
-		log.Printf("[yarad] WARNING: invalid YARAD_BACKEND_TIMEOUT=%s; using 6s", c.BackendTimeout)
-		c.BackendTimeout = 6 * time.Second
+		log.Printf("[yarad] WARNING: invalid YARAD_BACKEND_TIMEOUT=%s; using 1s", c.BackendTimeout)
+		c.BackendTimeout = 1 * time.Second
 	}
 	if c.ScanTimeout <= 0 {
-		log.Printf("[yarad] WARNING: invalid YARAD_SCAN_TIMEOUT=%s; using 10s", c.ScanTimeout)
-		c.ScanTimeout = 10 * time.Second
+		log.Printf("[yarad] WARNING: invalid YARAD_SCAN_TIMEOUT=%s; using 8s", c.ScanTimeout)
+		c.ScanTimeout = 8 * time.Second
 	}
 	if c.MaxBody <= 0 {
 		c.MaxBody = 8 * 1024 * 1024
