@@ -29,6 +29,11 @@ func FuzzExtract(f *testing.F) {
 	}
 	_ = zw.Close()
 	f.Add(z.Bytes())
+	// Archive magics (gz/7z/rar) followed by junk — exercise the nested-archive
+	// decompressors' fail-open paths.
+	f.Add(append(append([]byte{}, gzipMagic...), bytes.Repeat([]byte{0xFF}, 64)...))
+	f.Add(append(append([]byte{}, sevenZMagic...), bytes.Repeat([]byte{0xAA}, 128)...))
+	f.Add(append(append([]byte{}, rarMagic...), bytes.Repeat([]byte{0x55}, 128)...))
 	f.Add([]byte{})
 	f.Add([]byte("plain text"))
 

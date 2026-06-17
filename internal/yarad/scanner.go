@@ -58,6 +58,7 @@ type Scanner struct {
 	exMSI                                                             atomic.Uint64 // OLE2 buffers recognised as MSI installers
 	exMSG                                                             atomic.Uint64 // OLE2 buffers recognised as Outlook .msg (attachments extracted)
 	exOneNote                                                         atomic.Uint64 // buffers recognised as OneNote .one (embedded files carved)
+	exArchive                                                         atomic.Uint64 // buffers recognised as an archive (zip/gz/7z/rar/tar; members unpacked)
 	exEncodedScript                                                   atomic.Uint64 // buffers with >=1 decoded MS-Script-Encoder block
 	exStreamMatches                                                   atomic.Uint64 // distinct rule hits that came ONLY from an extracted stream (not raw bytes)
 
@@ -103,6 +104,7 @@ type ExtractMetrics struct {
 	MSI       uint64 // OLE2 buffers recognised as MSI installers (streams dumped)
 	MSG       uint64 // OLE2 buffers recognised as Outlook .msg (attachments extracted)
 	OneNote   uint64 // buffers recognised as OneNote .one (embedded files carved)
+	Archive   uint64 // buffers recognised as an archive (zip/gz/7z/rar/tar; members unpacked)
 	EncScript uint64 // buffers with >=1 decoded MS-Script-Encoder (VBE/JSE) block
 	// StreamMatches counts rule hits attributable ONLY to an extracted stream
 	// (macro/MSI/VBE), i.e. rules that did NOT already fire on the raw bytes —
@@ -122,6 +124,7 @@ func (s *Scanner) ExtractMetrics() ExtractMetrics {
 		MSI:           s.exMSI.Load(),
 		MSG:           s.exMSG.Load(),
 		OneNote:       s.exOneNote.Load(),
+		Archive:       s.exArchive.Load(),
 		EncScript:     s.exEncodedScript.Load(),
 		StreamMatches: s.exStreamMatches.Load(),
 	}
@@ -581,6 +584,9 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 	}
 	if res.IsOneNote {
 		s.exOneNote.Add(1)
+	}
+	if res.IsArchive {
+		s.exArchive.Add(1)
 	}
 	if res.EncodedScript {
 		s.exEncodedScript.Add(1)
