@@ -25,6 +25,8 @@ type ScanEngine interface {
 	// Fingerprint identifies the active rule set; it is mixed into the cache key
 	// so a reload that changes the rules invalidates old verdicts (L1 and Redis).
 	Fingerprint() string
+	// ExtractMetrics reports the OLE/OOXML pre-extraction counters for /metrics.
+	ExtractMetrics() ExtractMetrics
 }
 
 // scanResponse is the JSON the rspamd plugin parses. Matches is empty (not
@@ -121,11 +123,53 @@ func (s *Server) logStartup(addr string) {
 	s.logf("listening on %s (rules=%d, timeout=%s, scan_timeout=%s, max_concurrent=%d, max_body=%dB, cache=%s ttl=%s size=%d, auth=%t)",
 		addr, s.engine.RuleCount(), s.cfg.BackendTimeout, s.cfg.ScanTimeout,
 		s.cfg.MaxConcurrent, s.cfg.MaxBody, cache, s.cfg.CacheTTL, s.cfg.CacheSize, s.cfg.Token != "")
+
+	// Worst-case request-buffer memory: each in-flight scan can hold a full body
+	// plus its extracted macro streams, on top of the loaded-rules RSS. Surface
+	// it so an operator can see whether MAX_CONCURRENT × MAX_BODY fits the
+	// container limit — with MAX_CONCURRENT=auto (CPU count) a many-core host can
+	// reserve far more buffer memory than a small mem_limit allows (memory != rule
+	// count). When the cgroup memory limit is known, warn if the buffers alone
+	// would take more than half of it (leaving no room for rules RSS + GC + burst).
+	peakMiB := (int64(s.cfg.MaxConcurrent) * s.cfg.MaxBody) >> 20
+	s.logf("est. peak request-buffer memory ~%d MiB (max_concurrent=%d × max_body=%d MiB) on top of rules RSS",
+		peakMiB, s.cfg.MaxConcurrent, s.cfg.MaxBody>>20)
+	if limitMiB := cgroupMemLimitMiB(); limitMiB > 0 && peakMiB > limitMiB/2 {
+		s.errf("WARNING: request buffers alone (~%d MiB) exceed half the %d MiB container memory limit; lower YARAD_MAX_CONCURRENT (or set a number instead of auto) / YARAD_MAX_BODY, or raise mem_limit",
+			peakMiB, limitMiB)
+	} else if limitMiB == 0 && peakMiB > 512 {
+		s.errf("WARNING: max_concurrent × max_body alone is ~%d MiB of buffers; lower YARAD_MAX_CONCURRENT or YARAD_MAX_BODY", peakMiB)
+	}
 	s.logf("repo: %s", RepoURL)
 }
 
 // RepoURL is the project's source, logged at startup when log-stdout is on.
 const RepoURL = "https://github.com/eilandert/rspamd-yarad"
+
+// cgroupMemLimitMiB returns the container memory limit in MiB, or 0 if there is
+// no enforced limit or it can't be read. Supports cgroup v2 (memory.max) and v1
+// (memory.limit_in_bytes); "max" or the kernel's no-limit sentinel is unlimited.
+func cgroupMemLimitMiB() int64 {
+	for _, p := range []string{
+		"/sys/fs/cgroup/memory.max",                   // cgroup v2
+		"/sys/fs/cgroup/memory/memory.limit_in_bytes", // cgroup v1
+	} {
+		b, err := os.ReadFile(p) // #nosec G304 -- fixed cgroup pseudo-file paths, not user input
+		if err != nil {
+			continue
+		}
+		s := strings.TrimSpace(string(b))
+		if s == "" || s == "max" {
+			return 0
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n <= 0 || n >= 1<<62 { // huge value = kernel "no limit" sentinel
+			return 0
+		}
+		return n >> 20
+	}
+	return 0
+}
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
@@ -206,7 +250,16 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		matches = []Match{}
 	}
 	writeJSON(w, http.StatusOK, scanResponse{Matches: matches})
-	s.vlogf("/scan %dB cache=%s %.1fms -> %d matches", len(buf), cacheStatus, msSince(t0), len(matches))
+	// Log the matched rule NAMES (not just a count) whenever something fires, at
+	// info level — this is the cheap, accurate way to see which rules fire on
+	// real mail and spot over-firing/FP rules to tune or demote. A per-rule
+	// Prometheus metric is deliberately avoided: ~10k rules would blow label
+	// cardinality. Clean scans stay quiet (verbose-only) to keep logs readable.
+	if len(matches) > 0 {
+		s.logf("/scan %dB cache=%s %.1fms -> %d matches %s", len(buf), cacheStatus, msSince(t0), len(matches), ruleNames(matches))
+	} else {
+		s.vlogf("/scan %dB cache=%s %.1fms -> 0 matches", len(buf), cacheStatus, msSince(t0))
+	}
 }
 
 // lookupOrScan resolves a verdict for buf: cache hit, coalesced wait on an
@@ -308,6 +361,15 @@ func (s *Server) serveMetrics(w http.ResponseWriter) {
 	b.WriteString("# HELP yarad_rules loaded YARA rule count\n")
 	b.WriteString("# TYPE yarad_rules gauge\n")
 	b.WriteString("yarad_rules " + strconv.FormatInt(s.engine.RuleCount(), 10) + "\n")
+
+	// OLE/OOXML pre-extraction counters — visibility into the document path.
+	ex := s.engine.ExtractMetrics()
+	fm("extract_docs_total", "attachments recognised as OLE2/OOXML containers", uint64(ex.Docs))
+	fm("extract_macro_docs_total", "documents that yielded >=1 decompressed macro stream", uint64(ex.MacroDocs))
+	fm("extract_streams_total", "decompressed macro streams scanned", uint64(ex.Streams))
+	fm("extract_failed_total", "container parse attempts that errored", uint64(ex.Failed))
+	fm("extract_panicked_total", "parser panics recovered (subset of failed)", uint64(ex.Panicked))
+	fm("extract_encrypted_total", "ECMA-376 encrypted OOXML seen (not decrypted)", uint64(ex.Encrypted))
 	writeRaw(w, http.StatusOK, "text/plain; version=0.0.4", []byte(b.String()))
 }
 
@@ -335,6 +397,27 @@ func writeRaw(w http.ResponseWriter, code int, ctype string, body []byte) {
 func sha256key(b []byte) string {
 	sum := sha256.Sum256(b)
 	return string(sum[:])
+}
+
+// ruleNames renders the matched rule identifiers as "[a, b, c]" for the access
+// log. Capped so a pathological message matching hundreds of rules can't write a
+// multi-kilobyte log line per scan.
+func ruleNames(m []Match) string {
+	const max = 20
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, x := range m {
+		if i == max {
+			fmt.Fprintf(&b, ", +%d more", len(m)-max)
+			break
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(x.Rule)
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 func msSince(t time.Time) float64 { return float64(time.Since(t).Microseconds()) / 1000 }

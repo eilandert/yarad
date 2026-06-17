@@ -35,7 +35,10 @@ rules reloaded on its own. It's the same shape as the
 * **`GET /health`** — `200` only while a rule set is actually loaded. Wired to the
   container `HEALTHCHECK`.
 * **`GET /metrics`** — Prometheus counters: scans, matches, errors, busy
-  rejections, cache hits/misses/coalesced, and the loaded rule count.
+  rejections, cache hits/misses/coalesced, the loaded rule count, and the
+  document pre-extraction counters (`yarad_extract_docs_total`,
+  `extract_macro_docs_total`, `extract_streams_total`, `extract_failed_total`,
+  `extract_panicked_total`, `extract_encrypted_total`).
 
 ## Built for a real mail firehose
 
@@ -101,7 +104,7 @@ over env, env wins over the default.
 | `YARAD_RULES` | — | a precompiled `.yac` bundle; loaded instead of `RULES_DIR` (faster start) |
 | `YARAD_SCAN_TIMEOUT` | `10` (s) | per-scan libyara budget |
 | `YARAD_BACKEND_TIMEOUT` | `6` (s) | per-request budget / how long to wait for a concurrency slot |
-| `YARAD_MAX_CONCURRENT` | CPU count | max scans in flight at once |
+| `YARAD_MAX_CONCURRENT` | `auto` (CPU count) | max scans in flight at once; `auto` = CPU count |
 | `YARAD_MAX_BODY` | `8388608` (8 MiB) | max request body, in bytes |
 | `YARAD_CACHE_TTL` | `600` (s) | verdict cache TTL; `0` disables caching entirely |
 | `YARAD_CACHE_SIZE` | `65536` | in-memory LRU entries |
@@ -125,10 +128,17 @@ The image bakes public rulesets at build time. A daily rebuild
   broad community malware/phishing set (THOR/Loki rules).
 * **[ANY.RUN](https://github.com/anyrun/YARA)** — actively maintained
   malware-family and phishing rules (set `ANYRUN=0` to skip).
+* **[Didier Stevens Suite](https://github.com/DidierStevens/DidierStevensSuite)**
+  — public-domain OLE/RTF/maldoc rules, including the `vba.yara` macro-keyword
+  set that fires on extracted VBA (see below). Set `DIDIER=0` to skip.
+* **[bartblaze/Yara-rules](https://github.com/bartblaze/Yara-rules)** — MIT;
+  maldoc/RTF (RoyalRoad, OLE-in-CAD) and phishing-doc rules not aggregated by
+  YARA-Forge. Set `BARTBLAZE=0` to skip.
 
-Together that's roughly 10,000 rules. Pin any source with a build arg:
+Together that's roughly 10,000 rules. Pin or toggle any source with a build arg:
 `--build-arg YARAFORGE_URL=…`, `--build-arg SIGBASE_REF=<tag>`,
-`--build-arg ANYRUN_REF=<ref>`.
+`--build-arg ANYRUN_REF=<ref>`, `--build-arg DIDIER_REF=<ref>`,
+`--build-arg BARTBLAZE_REF=<ref>` (and `DIDIER=0` / `BARTBLAZE=0` / `ANYRUN=0`).
 
 Public rulesets are messy by nature, so two things keep them from breaking the
 build:
@@ -138,6 +148,24 @@ build:
 * Each rule file is test-compiled on its own first; a single unparseable file is
   logged and skipped rather than aborting the whole load. It's an error only if
   *nothing* compiles.
+
+## Office macro extraction
+
+A raw `.docm`/`.xlsm` is a ZIP, and its VBA macros sit MS-OVBA-compressed inside
+a `vbaProject.bin` — so YARA keyword rules scanning the raw bytes see nothing.
+Before matching, yarad sniffs OLE2/OOXML attachments and decompresses the VBA to
+cleartext (pure-Go [oleparse](https://github.com/Velocidex/oleparse), no extra C
+deps), then scans **both** the raw bytes (file-format/exploit rules) and the
+decompressed macro source (keyword rules). Matches are merged and de-duplicated.
+
+While scanning that decompressed source, the external YARA variable `VBA` is set
+to `1`, so Didier's `vba.yara` rules (`VBA and any of (...)` — AutoOpen, Shell,
+CallByName, …) fire exactly where they should and stay inert on raw bytes.
+Extraction is best-effort and fail-open: a non-document, a parse error, or a
+hostile/poison file just falls back to a raw-only scan. The whole request shares
+one `YARAD_SCAN_TIMEOUT` budget across raw + every macro stream, so a document
+crafted with hundreds of modules can't monopolize a worker. Encrypted
+(ECMA-376) OOXML is detected and counted but not decrypted.
 
 ## Build & test
 
@@ -177,6 +205,7 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
 
 ## License
 
-[MIT](LICENSE).
-</content>
-</invoke>
+[MIT](LICENSE). Baked rule sets keep their own licenses (YARA-Forge core,
+signature-base, ANY.RUN, bartblaze = permissive; Didier Stevens = public
+domain).
+

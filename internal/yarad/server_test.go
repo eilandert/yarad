@@ -30,8 +30,9 @@ func (f *fakeEngine) Scan(buf []byte) ([]Match, error) {
 	}
 	return f.matches, f.err
 }
-func (f *fakeEngine) RuleCount() int64    { return f.count }
-func (f *fakeEngine) Fingerprint() string { return f.fp }
+func (f *fakeEngine) RuleCount() int64               { return f.count }
+func (f *fakeEngine) Fingerprint() string            { return f.fp }
+func (f *fakeEngine) ExtractMetrics() ExtractMetrics { return ExtractMetrics{} }
 
 func newTestServer(eng ScanEngine, token string) *Server {
 	cfg := &Config{Token: token, MaxConcurrent: 4, MaxBody: 1 << 20, BackendTimeout: 0}

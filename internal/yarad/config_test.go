@@ -51,6 +51,17 @@ func TestLoadConfigEnvOverride(t *testing.T) {
 	}
 }
 
+// YARAD_MAX_CONCURRENT="auto" (any case) must resolve to the CPU count, the same
+// as leaving it unset, so operators can write the literal default explicitly.
+func TestLoadConfigMaxConcurrentAuto(t *testing.T) {
+	for _, v := range []string{"auto", "AUTO", "Auto"} {
+		t.Setenv("YARAD_MAX_CONCURRENT", v)
+		if c := LoadConfig(); c.MaxConcurrent != runtime.NumCPU() {
+			t.Errorf("%q -> MaxConcurrent=%d, want %d", v, c.MaxConcurrent, runtime.NumCPU())
+		}
+	}
+}
+
 func TestEnvOrFile(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "tok")

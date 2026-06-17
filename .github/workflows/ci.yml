@@ -95,6 +95,31 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libyara-dev
       - name: fuzz smoke (untrusted /scan body)
         run: go test -run=x -fuzz='^FuzzScanBody$' -fuzztime=30s ./internal/yarad/
+      - name: fuzz smoke (extract — hostile OLE2/OOXML attachment)
+        run: go test -run=x -fuzz='^FuzzExtract$' -fuzztime=60s ./internal/extract/
+
+  # AddressSanitizer over the CGO/libyara surface: catches heap errors in our
+  # go-yara usage (Scanner lifecycle, buffer passing) that -race can't. Valgrind
+  # is deliberately NOT used — on a Go binary its runtime/GC trips constant false
+  # positives; ASAN via the Go toolchain is the right tool for the cgo boundary.
+  # The pure-Go extract package is also exercised (harmless, no cgo there).
+  asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: go.sum
+      - name: install libyara + clang
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libyara-dev clang
+      - name: go test -asan
+        env:
+          CC: clang
+          # libyara is not ASAN-built (dynamic apt package), so suppress the
+          # cross-DSO false positives while keeping real heap-error detection.
+          ASAN_OPTIONS: detect_leaks=0:detect_odr_violation=0
+        run: go test -asan ./...
 
   codeql:
     runs-on: ubuntu-latest

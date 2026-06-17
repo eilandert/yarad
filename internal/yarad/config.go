@@ -23,7 +23,7 @@ type Config struct {
 	Host           string        // YARAD_HOST            (default 0.0.0.0)
 	Port           int           // YARAD_PORT            (default 8079)
 	BackendTimeout time.Duration // YARAD_BACKEND_TIMEOUT (default 6s)
-	MaxConcurrent  int           // YARAD_MAX_CONCURRENT  (default = CPU count)
+	MaxConcurrent  int           // YARAD_MAX_CONCURRENT  (default "auto" = CPU count)
 	MaxBody        int64         // YARAD_MAX_BODY bytes  (default 8 MiB)
 	Token          string        // YARAD_TOKEN[_FILE]    (required for /scan)
 
@@ -58,7 +58,7 @@ func LoadConfig() *Config {
 		Host:           envStr("YARAD_HOST", "0.0.0.0"),
 		Port:           envInt("YARAD_PORT", 8079),
 		BackendTimeout: envDur("YARAD_BACKEND_TIMEOUT", 6),
-		MaxConcurrent:  envInt("YARAD_MAX_CONCURRENT", runtime.NumCPU()),
+		MaxConcurrent:  envIntAuto("YARAD_MAX_CONCURRENT", runtime.NumCPU()),
 		MaxBody:        envInt64("YARAD_MAX_BODY", 8*1024*1024),
 		Token:          envOrFile("YARAD_TOKEN"),
 		RulesDir:       envStr("YARAD_RULES_DIR", "/rules"),
@@ -131,6 +131,22 @@ func envStr(name, def string) string {
 
 func envInt(name string, def int) int {
 	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name))); err == nil {
+		return n
+	}
+	return def
+}
+
+// envIntAuto is envInt that also accepts the literal "auto" (case-insensitive),
+// returning the caller's default. Used for YARAD_MAX_CONCURRENT so operators can
+// write "auto" to mean "size to the CPU count" — which sets the number of scans
+// run in parallel (and thus the effective scanning thread count) — instead of
+// hard-coding a number. Empty or invalid also falls back to the default.
+func envIntAuto(name string, def int) int {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" || strings.EqualFold(v, "auto") {
+		return def
+	}
+	if n, err := strconv.Atoi(v); err == nil {
 		return n
 	}
 	return def
