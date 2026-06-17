@@ -24,6 +24,35 @@ side stays fully async, and the scanner can be restarted, scaled, or have its
 rules reloaded on its own. It's the same shape as the
 [gozer](https://github.com/eilandert/gozer) DCC/Razor/Pyzor backend.
 
+## YARA is more than a pile of regexes
+
+It's tempting to think of YARA as "grep with a config file". It isn't. A regex
+matches a string; a YARA rule matches the *shape* of a file. A rule is a small
+declarative program — `strings:` (literal, hex, or regex patterns) plus a
+`condition:` that combines them with boolean logic, counts, offsets, and file
+position. On top of that, libyara ships **format-aware modules** that parse a
+file before you match against it:
+
+* **`pe` / `elf` / `macho` / `dotnet`** — parse the executable header so a rule
+  can key off the import table, the entry-point section, the rich header, the
+  number of sections, a specific exported symbol, or the .NET module GUID —
+  structural traits a malware author can't change without breaking their own
+  payload.
+* **`hash`** — `hash.md5(0, filesize)`, or an **imphash** over the import table,
+  so a rule can pin an exact known-bad blob or a whole family that shares an
+  import layout.
+* **`math`** — `math.entropy(...)` to flag a packed/encrypted section, mean-byte
+  and chi-square tests to spot compression or XOR.
+* **`time`, `console`, external variables** — runtime context (`filename`,
+  `filesize`, and yarad's own `VBA` flag, below) folded into the condition.
+
+That's the difference that matters for mail: a literal-string signature dies the
+moment the author edits one byte; a rule that asserts "PE file, entropy of the
+last section > 7.0, imports `VirtualAlloc` and `CreateRemoteThread`, and the
+overlay starts with these magic bytes" survives the next variant. Hashes catch
+yesterday's exact file — rules catch tomorrow's. yarad compiles all of this
+(modules and all) and runs it over every message and attachment.
+
 ## What it gives you
 
 * **`POST /scan`** — put raw message bytes (or one MIME part) in the body, get
@@ -138,21 +167,18 @@ and flushes the verdict cache. A reload that fails to compile keeps the previous
 
 ## Rules
 
-The image bakes public rulesets at build time. A daily rebuild
-(`--build-arg CACHEBUST=$(date +%s)`) re-pulls the latest:
+The image bakes five public rulesets at build time. A daily rebuild
+(`--build-arg CACHEBUST=$(date +%s)`) re-pulls the latest. **Full credit to the
+authors — yarad only packages their work; the rules are theirs.** Each set keeps
+its own license:
 
-* **[YARA-Forge](https://github.com/YARAHQ/yara-forge)** — the curated "core"
-  bundle of vetted public rules.
-* **[Neo23x0/signature-base](https://github.com/Neo23x0/signature-base)** — the
-  broad community malware/phishing set (THOR/Loki rules).
-* **[ANY.RUN](https://github.com/anyrun/YARA)** — actively maintained
-  malware-family and phishing rules (set `ANYRUN=0` to skip).
-* **[Didier Stevens Suite](https://github.com/DidierStevens/DidierStevensSuite)**
-  — public-domain OLE/RTF/maldoc rules, including the `vba.yara` macro-keyword
-  set that fires on extracted VBA (see below). Set `DIDIER=0` to skip.
-* **[bartblaze/Yara-rules](https://github.com/bartblaze/Yara-rules)** — MIT;
-  maldoc/RTF (RoyalRoad, OLE-in-CAD) and phishing-doc rules not aggregated by
-  YARA-Forge. Set `BARTBLAZE=0` to skip.
+| Ruleset | Author / source | License | Notes |
+|---------|-----------------|---------|-------|
+| **YARA-Forge "core"** | [YARAHQ/yara-forge](https://github.com/YARAHQ/yara-forge) | aggregator (tooling GPL-3.0; **each bundled rule retains its upstream author's license**) | ingests dozens of public repos, dedupes, drops the broken/dangerous, ships one vetted bundle in quality tiers |
+| **signature-base** | [Neo23x0/signature-base](https://github.com/Neo23x0/signature-base) (Florian Roth) | [Detection Rule License (DRL) 1.1](https://github.com/Neo23x0/signature-base/blob/master/LICENSE) (permissive) | the broad community malware/phishing set behind THOR/Loki |
+| **ANY.RUN** | [anyrun/YARA](https://github.com/anyrun/YARA) | published as public detection rules (no separate LICENSE file) | actively maintained malware-family + phishing (`ANYRUN=0` to skip) |
+| **Didier Stevens Suite** | [DidierStevens/DidierStevensSuite](https://github.com/DidierStevens/DidierStevensSuite) | **public domain** ("no Copyright, use at your own risk") | OLE/RTF/maldoc rules — incl. the `vba.yara` macro-keyword set that fires on extracted VBA (see below); curated subset, the multi-thousand-rule PEiD packer DB is excluded (`DIDIER=0` to skip) |
+| **bartblaze/Yara-rules** | [bartblaze/Yara-rules](https://github.com/bartblaze/Yara-rules) | **MIT** | maldoc/RTF (RoyalRoad, OLE-in-CAD) + phishing-doc rules not aggregated by YARA-Forge (`BARTBLAZE=0` to skip) |
 
 Together that's roughly 10,000 rules. Pin or toggle any source with a build arg:
 `--build-arg YARAFORGE_URL=…`, `--build-arg SIGBASE_REF=<tag>`,
@@ -168,23 +194,74 @@ build:
   logged and skipped rather than aborting the whole load. It's an error only if
   *nothing* compiles.
 
-## Office macro extraction
+## OLE / RTF / Office-macro handling
 
-A raw `.docm`/`.xlsm` is a ZIP, and its VBA macros sit MS-OVBA-compressed inside
-a `vbaProject.bin` — so YARA keyword rules scanning the raw bytes see nothing.
-Before matching, yarad sniffs OLE2/OOXML attachments and decompresses the VBA to
-cleartext (pure-Go [oleparse](https://github.com/Velocidex/oleparse), no extra C
-deps), then scans **both** the raw bytes (file-format/exploit rules) and the
-decompressed macro source (keyword rules). Matches are merged and de-duplicated.
+Malware in mail mostly arrives as a document, and a document hides its payload in
+ways a raw byte-scan can't see. yarad handles the three shapes separately:
 
-While scanning that decompressed source, the external YARA variable `VBA` is set
-to `1`, so Didier's `vba.yara` rules (`VBA and any of (...)` — AutoOpen, Shell,
-CallByName, …) fire exactly where they should and stay inert on raw bytes.
-Extraction is best-effort and fail-open: a non-document, a parse error, or a
-hostile/poison file just falls back to a raw-only scan. The whole request shares
-one `YARAD_SCAN_TIMEOUT` budget across raw + every macro stream, so a document
-crafted with hundreds of modules can't monopolize a worker. Encrypted
-(ECMA-376) OOXML is detected and counted but not decrypted.
+**OLE2 / OOXML macros — decompress, then scan.** A raw `.docm`/`.xlsm` is a ZIP
+whose VBA macros sit **MS-OVBA run-length-compressed** inside a `vbaProject.bin`
+(itself an OLE2/CFB compound file); a legacy `.doc`/`.xls` is OLE2 directly. YARA
+keyword rules scanning the raw bytes see only the compressed blob — they never
+fire. So before matching, yarad magic-sniffs `D0CF11E0` (OLE2) / `PK\x03\x04`
+(zip) and **decompresses the VBA back to cleartext** with the pure-Go
+[Velocidex/oleparse](https://github.com/Velocidex/oleparse) (no extra C deps,
+runs the MS-OVBA `DecompressStream`). It then scans **both** the raw bytes
+(file-format/exploit rules) and the decompressed macro source (keyword rules),
+and merges + de-duplicates the matches. While scanning the cleartext, the
+external YARA variable `VBA` is set to `1`, so Didier's `vba.yara` rules (`VBA
+and any of (...)` — `AutoOpen`, `Shell`, `CallByName`, …) fire exactly where they
+should and stay inert on raw bytes.
+
+**RTF exploits — matched on raw bytes (no extraction needed).** RTF maldocs (the
+classic CVE-2017-11882 Equation-Editor drop, embedded-OLE `objdata` hex) carry
+their payload as hex in the raw `.rtf`, so the signature-base / Didier `rtf.yara`
+exploit rules already match the raw bytes directly — no decompression step.
+
+**Deobfuscation.** Two passes. (1) The MS-OVBA decompression above *is* the first
+deobfuscation — it turns the on-disk compressed stream into the source the author
+wrote. (2) On every buffer (raw message **and** each decompressed macro/RTF
+stream) yarad runs cheap, bounded URL **defanging** — `hxxp`→`http`, `[.]`/`(dot)`
+→`.`, `[:]`→`:` — so a malware URL written `hxxp://evil[.]tld` is un-mangled
+before the URLhaus lookup (below). A hit found only after defanging is flagged
+`_DEOBF`.
+
+Extraction is **best-effort and fail-open**: a non-document, a parse error, an
+encrypted package, or a hostile/poison file (oleparse panics are recovered) just
+falls back to a raw-only scan — a broken document never blocks mail. The whole
+request shares one `YARAD_SCAN_TIMEOUT` budget across raw + every macro stream,
+and zip-bomb caps bound the work (max streams / bytes-per-bin / total cleartext /
+zip entries / parsed `.bin` count), so a document stuffed with hundreds of
+modules can't monopolize a worker. Encrypted (ECMA-376) OOXML is detected and
+counted (`yarad_extract_encrypted_total`) but **not** decrypted.
+
+### How much of Python's oletools this replaces
+
+The Python [oletools](https://github.com/decalage2/oletools) suite (`olevba`,
+`mraptor`, `oleid`, `rtfobj`, …) is the reference toolkit for maldoc triage, and
+yarad's [`rspamd-olefy`](https://github.com/eilandert/rspamd-olefy) sibling wraps
+it. With the extract front-end above **plus the baked maldoc rules, yarad now
+covers roughly 80% of what oletools does for mail, in-process and with no Python**:
+
+* **VBA extraction + MS-OVBA decompression** — the core of `olevba`. ✅
+* **Macro keyword / autoexec / suspicious-call detection** — `olevba`'s indicator
+  list and `mraptor`'s autoexec+write+execute heuristic, expressed as YARA rules
+  (`vba.yara`, signature-base maldoc rules) over the cleartext. ✅
+* **OLE indicators** — macro presence and ECMA-376 **encryption** detection, the
+  heart of `oleid`. ✅
+* **RTF / embedded-OLE exploit detection** — CVE-2017-11882 etc. via raw-byte
+  rules, the maldoc half of `rtfobj`. ✅
+* **IOC / URL extraction → reputation** — yarad goes *beyond* oletools here by
+  checking extracted URLs against the live URLhaus feed (below). ✅
+
+The remaining ~20% is the deep tail that still belongs to oletools/olefy, and why
+that scorer stays running in parallel: `olevba`'s **deobfuscation decode**
+(actually decoding Base64/hex/`StrReverse`/Dridex chains to reveal the hidden
+string, not just pattern-matching that they're present), **XLM / Excel-4.0 macro
+emulation**, and `rtfobj`'s **carve-and-decode** of embedded objects out of
+hostile RTF. yarad matches the *patterns* of obfuscation; it doesn't fully decode
+them. So `rspamd-olefy` remains the parallel deep-scan scorer until that tail is
+covered.
 
 ## URLhaus malware-URL lookup (optional)
 
@@ -239,6 +316,9 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
 
 ## License
 
-[MIT](LICENSE). Baked rule sets keep their own licenses (YARA-Forge core,
-signature-base, ANY.RUN, bartblaze = permissive; Didier Stevens = public
-domain).
+yarad itself is [MIT](LICENSE). The baked rule sets are **not** yarad's work and
+**keep their own licenses** — see the [Rules](#rules) table for per-source credit:
+signature-base = DRL 1.1, bartblaze = MIT, Didier Stevens = public domain,
+ANY.RUN = public detection rules, and YARA-Forge core is an aggregate where each
+rule retains its upstream author's license. Dependencies are permissive
+(`go-yara` BSD-2, `oleparse` MIT, redis client BSD/Apache).
