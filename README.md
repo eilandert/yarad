@@ -304,16 +304,27 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
 
 * [`plugins/yara.lua`](rspamd/plugins/yara.lua) — the async plugin that POSTs to
-  yarad and raises a single `YARA_MATCH` symbol whose options are the matched
-  rules as `name (source-file.yar)` (so a hit is traceable to its ruleset).
-  URLhaus hits go to a separate `URLHAUS_MALWARE_URL` symbol whose options are
-  the matched **URLs** themselves (with a `(host)`/`(deobf)` tag for those
-  variants), so the history shows exactly which link tripped it.
+  yarad and **classifies each matched rule into a scoring tier** (by its name /
+  source-file / tags / `meta.score`), raising one of these symbols with the
+  matched rules as options (`name (source-file.yar)`, so a hit is traceable to
+  its ruleset):
+
+  | symbol | tier | default weight |
+  |--------|------|----------------|
+  | `YARA_MALWARE` | malware family / webshell / RAT / APT / ransomware | `8.0` |
+  | `YARA_EXPLOIT` | exploit / CVE / maldoc exploit | `7.0` |
+  | `YARA_PHISHING` | phishing kit / document | `5.0` |
+  | `YARA_MATCH` | uncategorized rule match (default bucket) | `4.0` |
+  | `YARA_SUSPICIOUS` | heuristic / suspicious / anomaly (FP-prone) | `2.0` |
+  | `URLHAUS_MALWARE_URL` | known malware URL — options are the **URLs** (`(host)`/`(deobf)` tagged) | `8.0` |
+
+  Tiers stack, capped by the group `max_score`. The classifier is heuristic and
+  lives in the plugin, so retuning needs only an rspamd reload (no yarad rebuild).
 * [`rspamd.conf.local`](rspamd/rspamd.conf.local) — how to load a *custom* lua
   module (it must be an inline `yara { }` block + explicit `lua =` include, not a
   `local.d/` file; see the comments for why).
-* [`local.d/groups.conf`](rspamd/local.d/groups.conf) — the score. Ships at
-  weight `7.0`; set it to `0.0` for a cautious log-only first run.
+* [`local.d/groups.conf`](rspamd/local.d/groups.conf) — the per-tier weights
+  (above). Set any tier to `0.0` for a cautious log-only first run.
 
 ## See also
 

@@ -40,7 +40,15 @@ local settings = {
   -- A plugin timeout below that sum just abandons scans that are still running.
   timeout = 10.0,
   max_size = 8 * 1024 * 1024,  -- don't ship bodies larger than this to yarad
-  symbol = "YARA_MATCH",
+  -- Scoring tiers. Each matched rule is classified (see classify()) into ONE of
+  -- these symbols by its name/source-file/tags/meta.score, so different kinds of
+  -- hit score differently in groups.conf instead of one flat weight for every
+  -- rule. `symbol` is the default/uncategorized bucket (and the callback symbol).
+  symbol            = "YARA_MATCH",       -- uncategorized rule match (default)
+  symbol_malware    = "YARA_MALWARE",     -- malware family / webshell / RAT / APT
+  symbol_exploit    = "YARA_EXPLOIT",     -- exploit / CVE / maldoc exploit
+  symbol_phishing   = "YARA_PHISHING",    -- phishing kit / phishing document
+  symbol_suspicious = "YARA_SUSPICIOUS",  -- heuristic / suspicious / anomaly
   -- Separate symbol for yarad's URLhaus malware-URL hits (rule names start
   -- "URLHAUS_"), so they score independently of YARA rule matches.
   urlhaus_symbol = "URLHAUS_MALWARE_URL",
@@ -103,6 +111,48 @@ local function post(task, buf, what, cb)
   end
 end
 
+-- classify maps a matched YARA rule to a scoring-tier symbol from its name,
+-- source file (namespace), tags and any meta.score. Heuristic and intentionally
+-- tunable here (retuning needs only an rspamd reload, no yarad rebuild). The
+-- strongest signal wins; anything unrecognised falls back to the default symbol.
+local function classify(m)
+  local hay = string.lower((m.rule or "") .. " " .. (m.namespace or ""))
+  if type(m.tags) == "table" then
+    hay = hay .. " " .. string.lower(table.concat(m.tags, " "))
+  end
+  local function has(...)
+    for _, p in ipairs({ ... }) do
+      if hay:find(p, 1, true) then return true end
+    end
+    return false
+  end
+  -- Exploit / CVE / maldoc exploit (Equation Editor, shellcode, …).
+  if has("expl", "cve", "exploit", "equation", "shellcode") then
+    return settings.symbol_exploit
+  end
+  -- Malware family / webshell / hacktool / APT / ransomware / loader / stealer.
+  if has("malw", "webshell", "ransom", "backdoor", "trojan", "apt_", "apt-",
+         "hktl", "hacktool", "loader", "stealer", "botnet", "dropper", "keylog") then
+    return settings.symbol_malware
+  end
+  -- Phishing kits / phishing documents.
+  if has("phish", "_pk_", "phishingkit", "credential") then
+    return settings.symbol_phishing
+  end
+  -- Heuristic / suspicious / anomaly / obfuscation.
+  if has("susp", "anomaly", "heuristic", "obfusc") then
+    return settings.symbol_suspicious
+  end
+  -- Fall back to a numeric meta.score where the ruleset provides one (YARA-Forge,
+  -- signature-base): high = malware-grade, low = suspicious, else generic.
+  local sc = tonumber(m.meta and m.meta.score)
+  if sc then
+    if sc >= 75 then return settings.symbol_malware end
+    if sc < 40 then return settings.symbol_suspicious end
+  end
+  return settings.symbol
+end
+
 local function check_cb(task)
   -- Skip authenticated / outbound mail.
   if task:get_user() then return end
@@ -125,24 +175,33 @@ local function check_cb(task)
   end
   if #jobs == 0 then return end
 
-  -- Fan out the scans; collect distinct matched rule names across all buffers.
-  -- URLHAUS_* matches (malware-URL hits from yarad's URLhaus check) go to their
-  -- own symbol so they can be scored separately from YARA rule matches; the
-  -- specific URLHAUS_* names become that symbol's options. One insert per symbol,
-  -- after the last response.
+  -- Fan out the scans; bucket distinct matches per scoring-tier symbol across all
+  -- buffers. Each YARA rule is classified into a tier (malware/exploit/phishing/
+  -- suspicious/default) so different hits score differently; URLHAUS_* hits go to
+  -- their own symbol. One insert_result per non-empty symbol, after the last
+  -- response, with the rule names (or URLs) as that symbol's options.
   local seen = {}
-  local yara_rules = {}
-  local url_rules = {}
+  local buckets = {} -- symbol name -> array of option strings
   local pending = #jobs
+
+  local function add(sym, opt, key)
+    if seen[key] then return end
+    seen[key] = true
+    local b = buckets[sym]
+    if not b then
+      b = {}
+      buckets[sym] = b
+    end
+    b[#b + 1] = opt
+  end
 
   local function finish()
     pending = pending - 1
     if pending > 0 then return end
-    if #yara_rules > 0 then
-      task:insert_result(settings.symbol, 1.0, yara_rules)
-    end
-    if #url_rules > 0 then
-      task:insert_result(settings.urlhaus_symbol, 1.0, url_rules)
+    for sym, opts in pairs(buckets) do
+      if #opts > 0 then
+        task:insert_result(sym, 1.0, opts)
+      end
     end
   end
 
@@ -156,23 +215,20 @@ local function check_cb(task)
             -- dedup on the URL so several distinct bad links don't collapse into
             -- one. Append a short tag for the host/deobfuscated variants.
             local url = (type(m.meta) == "table" and m.meta.url) or m.rule
-            if not seen["u:" .. url] then
-              seen["u:" .. url] = true
-              local tag = ""
-              if m.rule:find("_HOST") then tag = tag .. " (host)" end
-              if m.rule:find("_DEOBF") then tag = tag .. " (deobf)" end
-              url_rules[#url_rules + 1] = url .. tag
-            end
-          elseif not seen["y:" .. m.rule] then
-            -- Show "rule (source-file)" so a generic rule name (e.g. "http")
-            -- is traceable to the ruleset that shipped it. m.namespace is the
-            -- compiled rule file (yarad namespaces each file by its basename).
-            seen["y:" .. m.rule] = true
+            local tag = ""
+            if m.rule:find("_HOST") then tag = tag .. " (host)" end
+            if m.rule:find("_DEOBF") then tag = tag .. " (deobf)" end
+            add(settings.urlhaus_symbol, url .. tag, "u:" .. url)
+          else
+            -- Classify into a scoring tier, and show "rule (source-file)" so a
+            -- generic rule name (e.g. "http") is traceable to the ruleset that
+            -- shipped it. m.namespace is the compiled rule file.
+            local sym = classify(m)
             local opt = m.rule
             if m.namespace and m.namespace ~= "" then
               opt = m.rule .. " (" .. m.namespace .. ")"
             end
-            yara_rules[#yara_rules + 1] = opt
+            add(sym, opt, "y:" .. m.rule)
           end
         end
       end
@@ -218,13 +274,19 @@ local id = rspamd_config:register_symbol({
   flags = "empty",
 })
 
--- URLhaus hits are inserted from the same callback; register the symbol as a
--- virtual child so rspamd knows it and it can be scored in groups.conf.
-rspamd_config:register_symbol({
-  name = settings.urlhaus_symbol,
-  type = "virtual",
-  parent = id,
-})
+-- The tier symbols and the URLhaus symbol are all inserted from the same
+-- callback, so register each as a virtual child of the callback symbol: rspamd
+-- then knows them (no "unknown symbol" warnings) and they can be scored
+-- independently in groups.conf.
+for _, s in ipairs({
+  settings.symbol_malware,
+  settings.symbol_exploit,
+  settings.symbol_phishing,
+  settings.symbol_suspicious,
+  settings.urlhaus_symbol,
+}) do
+  rspamd_config:register_symbol({ name = s, type = "virtual", parent = id })
+end
 
 rspamd_logger.infox(rspamd_config, "%s: registered, backend=%s scan_message=%s scan_parts=%s urlhaus_symbol=%s",
   N, settings.url, settings.scan_message, settings.scan_parts, settings.urlhaus_symbol)
