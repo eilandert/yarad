@@ -65,6 +65,13 @@ local settings = {
   -- Only scan parts at/above this many bytes individually (tiny text parts are
   -- already covered by scan_message; skipping them saves round-trips).
   min_part_size = 64,
+  -- meta.score → per-hit weight band. A rule's meta.score (0..100) is mapped
+  -- linearly onto [score_weight_min, score_weight_max] and used as the symbol
+  -- weight for that hit (the max over all hits in a bucket wins). Rules without
+  -- a numeric meta.score keep weight 1.0. Set min=max=1.0 to disable and fall
+  -- back to the old flat-1.0 behaviour.
+  score_weight_min = 0.5,
+  score_weight_max = 1.5,
   -- Cap on /scan requests per message (whole-message job + part jobs). A mail
   -- with dozens of parts can't fan out unbounded into yarad. Identical parts
   -- (same attachment twice) are also deduped by their digest before this cap.
@@ -128,6 +135,22 @@ local function post(task, buf, what, fname, cb)
     rspamd_logger.errx(task, "yarad request could not be scheduled (%s)", what)
     return cb({})
   end
+end
+
+-- score_weight turns a YARA rule's meta.score (0..100, as shipped by YARA-Forge
+-- and signature-base) into a per-hit weight multiplier in [min..max], so a high-
+-- confidence rule contributes more than a borderline one *within the same tier*
+-- instead of every rule landing on a flat 1.0. The tier (group weight) is still
+-- the dominant factor; this only modulates inside it. Rules without a numeric
+-- meta.score (most of YARA-Forge core, ANY.RUN, …) keep weight 1.0 — unchanged
+-- behaviour. Tunable here; retuning needs only an rspamd reload.
+local function score_weight(m)
+  local sc = tonumber(m.meta and m.meta.score)
+  if not sc then return 1.0 end
+  if sc < 0 then sc = 0 elseif sc > 100 then sc = 100 end
+  -- Map 0..100 linearly onto the configured weight band.
+  local lo, hi = settings.score_weight_min, settings.score_weight_max
+  return lo + (hi - lo) * (sc / 100.0)
 end
 
 -- classify maps a matched YARA rule to a scoring-tier symbol from its name,
@@ -211,26 +234,31 @@ local function check_cb(task)
   -- their own symbol. One insert_result per non-empty symbol, after the last
   -- response, with the rule names (or URLs) as that symbol's options.
   local seen = {}
-  local buckets = {} -- symbol name -> array of option strings
+  local buckets = {} -- symbol name -> { opts = {..}, weight = number }
   local pending = #jobs
 
-  local function add(sym, opt, key)
+  -- add records a distinct option under a symbol and tracks the strongest weight
+  -- seen for that symbol (the max over all its hits) as the value to insert.
+  local function add(sym, opt, key, weight)
+    weight = weight or 1.0
     if seen[key] then return end
     seen[key] = true
     local b = buckets[sym]
     if not b then
-      b = {}
+      b = { opts = {}, weight = weight }
       buckets[sym] = b
+    elseif weight > b.weight then
+      b.weight = weight
     end
-    b[#b + 1] = opt
+    b.opts[#b.opts + 1] = opt
   end
 
   local function finish()
     pending = pending - 1
     if pending > 0 then return end
-    for sym, opts in pairs(buckets) do
-      if #opts > 0 then
-        task:insert_result(sym, 1.0, opts)
+    for sym, b in pairs(buckets) do
+      if #b.opts > 0 then
+        task:insert_result(sym, b.weight, b.opts)
       end
     end
   end
@@ -263,7 +291,8 @@ local function check_cb(task)
             if m.namespace and m.namespace ~= "" then
               opt = m.rule .. " (" .. m.namespace .. ")"
             end
-            add(sym, opt, "y:" .. m.rule)
+            -- Modulate within the tier by the rule's meta.score (1.0 if absent).
+            add(sym, opt, "y:" .. m.rule, score_weight(m))
           end
         end
       end
