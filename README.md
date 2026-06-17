@@ -461,7 +461,6 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
 - [x] PDF pre-extraction — carve every `stream … endstream` object body and inflate it (FlateDecode: zlib then raw-deflate), surfacing the decompressed bytes so hidden JS / `/OpenAction` / `/Launch` / embedded files are matched; bounded inflate attempts + per-stream/total caps (decompression-bomb guard), token-boundary check so a stray `stream` can't hide the real object; `extract_pdf_total` metric
 - [ ] ThreatFox / Feodo Tracker IOC feeds (domains/IPs)
 - [ ] File-level fuzzy hashing (TLSH/ssdeep)
-- [ ] ISO/IMG/VHD(X) container extraction
 - [ ] CHM / CAB / MSIX extraction
 - [ ] Extractor sandbox hardening (seccomp/rlimits) — after more parsers land
 - [ ] Batch `/scan` endpoint (collapse N part round-trips)
