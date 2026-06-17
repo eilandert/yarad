@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/eilandert/rspamd-yarad/internal/extract"
+	"github.com/eilandert/rspamd-yarad/internal/mbazaar"
 	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
 
@@ -36,6 +37,8 @@ type ScanEngine interface {
 	ReloadMetrics() ReloadMetrics
 	// URLhausMetrics reports the URLhaus checker state for /metrics.
 	URLhausMetrics() urlhaus.Metrics
+	// MBazaarMetrics reports the MalwareBazaar checker state for /metrics.
+	MBazaarMetrics() mbazaar.Metrics
 }
 
 // scanResponse is the JSON the rspamd plugin parses. Matches is empty (not
@@ -524,6 +527,16 @@ func (s *Server) serveMetrics(w http.ResponseWriter) {
 		gauge("urlhaus_feed_urls", "URLs in the loaded URLhaus feed", uh.FeedURLs)
 		gauge("urlhaus_feed_hosts", "hosts in the loaded URLhaus feed", uh.FeedHosts)
 		gauge("urlhaus_last_refresh_timestamp_seconds", "unix time of the last successful feed refresh", uh.LastRefreshUnix)
+	}
+
+	// MalwareBazaar attachment-hash lookup (only meaningful when enabled).
+	mb := s.engine.MBazaarMetrics()
+	if mb.Enabled {
+		fm("malwarebazaar_lookups_total", "attachments hashed and checked against the MalwareBazaar feed", mb.Lookups)
+		fm("malwarebazaar_hits_total", "attachments whose SHA256 matched a known malware sample", mb.Hits)
+		fm("malwarebazaar_refresh_failures_total", "MalwareBazaar feed refresh failures", mb.RefreshFailures)
+		gauge("malwarebazaar_feed_hashes", "known-malware SHA256 hashes in the loaded feed", mb.FeedHashes)
+		gauge("malwarebazaar_last_refresh_timestamp_seconds", "unix time of the last successful feed refresh", mb.LastRefreshUnix)
 	}
 	writeRaw(w, http.StatusOK, "text/plain; version=0.0.4", []byte(b.String()))
 }

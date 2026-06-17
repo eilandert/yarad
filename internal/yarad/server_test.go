@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eilandert/rspamd-yarad/internal/mbazaar"
 	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
 
@@ -198,6 +199,7 @@ type fakeEngine struct {
 	fp       string
 	scans    atomic.Int64 // how many times Scan actually ran
 	lastMeta atomic.Pointer[ScanMeta]
+	mb       mbazaar.Metrics // returned by MBazaarMetrics (zero = disabled)
 }
 
 func (f *fakeEngine) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
@@ -214,6 +216,7 @@ func (f *fakeEngine) Fingerprint() string             { return f.fp }
 func (f *fakeEngine) ExtractMetrics() ExtractMetrics  { return ExtractMetrics{} }
 func (f *fakeEngine) ReloadMetrics() ReloadMetrics    { return ReloadMetrics{} }
 func (f *fakeEngine) URLhausMetrics() urlhaus.Metrics { return urlhaus.Metrics{} }
+func (f *fakeEngine) MBazaarMetrics() mbazaar.Metrics { return f.mb }
 
 func newTestServer(eng ScanEngine, token string) *Server {
 	cfg := &Config{Token: token, MaxConcurrent: 4, MaxBody: 1 << 20, BackendTimeout: 0}
@@ -432,6 +435,23 @@ func TestMetrics(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %q in:\n%s", want, body)
 		}
+	}
+}
+
+// When the MalwareBazaar checker is enabled, /metrics must surface its gauges
+// and counters; when disabled they must be absent (no zero-value noise).
+func TestMetricsMalwareBazaar(t *testing.T) {
+	eng := &fakeEngine{count: 1, mb: mbazaar.Metrics{Enabled: true, FeedHashes: 1234, Lookups: 7, Hits: 1}}
+	s := newTestServer(eng, "tok")
+	body := get(s, "/metrics").Body.String()
+	for _, want := range []string{"yarad_malwarebazaar_feed_hashes 1234", "yarad_malwarebazaar_lookups_total 7", "yarad_malwarebazaar_hits_total 1"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q", want)
+		}
+	}
+	off := get(newTestServer(&fakeEngine{count: 1}, "tok"), "/metrics").Body.String()
+	if strings.Contains(off, "malwarebazaar") {
+		t.Errorf("disabled MalwareBazaar should emit no metrics lines:\n%s", off)
 	}
 }
 

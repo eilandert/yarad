@@ -88,7 +88,9 @@ yesterday's exact file — rules catch tomorrow's. yarad compiles all of this
   `extract_streams_total`, `extract_failed_total`, `extract_panicked_total`,
   `extract_encrypted_total`), and rule-reload activity (`reload_attempts_total`,
   `reload_success_total`, `reload_failure_total`, `reload_last_timestamp_seconds`,
-  `reload_last_duration_ms`).
+  `reload_last_duration_ms`). When the abuse.ch feeds are enabled, their
+  lookup/hit/refresh counters and feed-size gauges appear too
+  (`yarad_urlhaus_*`, `yarad_malwarebazaar_*`).
 
 On `SIGTERM`/`SIGINT` yarad drains: `/ready` starts returning `503` and in-flight
 scans finish (up to `YARAD_SCAN_TIMEOUT` + 5 s) before the process exits — safe
@@ -175,6 +177,9 @@ over env, env wins over the default.
 | `YARAD_URLHAUS_KEY[_FILE]` | — | abuse.ch Auth-Key; enables the URLhaus malware-URL lookup (see below) |
 | `YARAD_URLHAUS_REFRESH` | `21600` (s, = 6 h) | URLhaus feed refresh interval (floor 5 min) |
 | `YARAD_URLHAUS_MAX_URLS` | `64` | max URLs examined per message |
+| `YARAD_MBAZAAR_KEY[_FILE]` | — | abuse.ch Auth-Key (same key as URLhaus); enables the MalwareBazaar attachment-hash lookup (see below) |
+| `YARAD_MBAZAAR_REFRESH` | `86400` (s, = 24 h) | MalwareBazaar feed refresh interval (floor 5 min) |
+| `YARAD_MBAZAAR_FEED` | full dump | override the feed URL (e.g. the lighter "recent" export) |
 | `YARAD_RULE_DENYLIST` | `http` | comma-sep rule names to suppress (case-insensitive); public sets ship demo/noise rules (e.g. Didier's `http` = `"http" nocase`) that FP on nearly every mail. Set empty to disable. |
 | `YARAD_VERBOSE` | off | log one line per request |
 | `YARAD_LOG_STDOUT` | off | info/access logs to stdout (errors always go to stderr) |
@@ -284,6 +289,8 @@ covers roughly 80% of what oletools does for mail, in-process and with no Python
   rules, the maldoc half of `rtfobj`. ✅
 * **IOC / URL extraction → reputation** — yarad goes *beyond* oletools here by
   checking extracted URLs against the live URLhaus feed (below). ✅
+* **Attachment-hash reputation** — the SHA256 of each attachment is matched
+  against the abuse.ch MalwareBazaar corpus of known malware samples (below). ✅
 
 The remaining ~20% is the deep tail that still belongs to oletools/olefy, and why
 that scorer stays running in parallel: `olevba`'s **deobfuscation decode**
@@ -311,6 +318,30 @@ routes these to a separate `URLHAUS_MALWARE_URL` symbol (so they score
 independently of YARA rules) and uses the **URL itself** as the symbol option —
 so the rspamd history shows the actual malicious link, not just a constant rule
 name — with a `(host)`/`(deobf)` tag for those variants.
+
+## MalwareBazaar attachment-hash lookup (optional)
+
+Set the **same** abuse.ch Auth-Key via `YARAD_MBAZAAR_KEY` to also check the
+SHA256 of every scanned attachment against the
+[MalwareBazaar](https://bazaar.abuse.ch/) corpus of known malware samples. An
+exact hash hit is a direct file-level "this is known malware" verdict,
+independent of the YARA rules.
+
+Same fail-open feed-cache infra as URLhaus: the full CSV dump is downloaded once
+per `YARAD_MBAZAAR_REFRESH` (daily by default, floor 5 min) into an in-memory set
+of raw 32-byte digests (~40 MiB for ~1M samples — kept as `[32]byte` keys, not
+hex, to stay lean), and lookups are local map hits, never a per-message API call.
+A failed refresh keeps the previous set. The dump is a ZIP (one CSV); a plain-CSV
+feed (the lighter "recent" export, via `YARAD_MBAZAAR_FEED`) is also accepted —
+the body is magic-sniffed. **Memory:** the full feed adds ~40 MiB resident plus a
+~100–150 MiB transient spike while the daily dump is downloaded + unzipped; raise
+the container `mem_limit` (~768m) when enabling it.
+
+Hits come back as matches with rule name `MALWAREBAZAAR_MALWARE` and the matched
+digest in `meta.sha256`. The rspamd plugin routes these to a separate
+`MALWAREBAZAAR_MALWARE` symbol (highest weight — an exact known-malware file) and
+uses the **SHA256 itself** as the symbol option, so the history names the bad
+file (paste it into MalwareBazaar for the family/analysis).
 
 ## Build & test
 
@@ -378,7 +409,7 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
 
 **Quick wins (low effort, high value):**
 - [x] Pass filename/extension to yarad → set YARA `filename`/`extension` external vars (activates many existing rules) — `X-YARAD-Filename` (base64) header, plugin sends the MIME part name
-- [ ] MalwareBazaar attachment-hash lookup (SHA256 → known malware; reuse URLhaus feed-cache infra)
+- [x] MalwareBazaar attachment-hash lookup (SHA256 → known malware; cached full-dump feed, fail-open, own symbol)
 - [ ] Use `meta.score` in classification (finer tiering, no new parsers)
 - [ ] Rule-staleness healthcheck/metric (catch a silently-broken daily rebuild)
 - [ ] MSI extraction (OLE2, reuse the macro `fromOLE` path)

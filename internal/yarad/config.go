@@ -57,6 +57,13 @@ type Config struct {
 	URLhausRefresh time.Duration // YARAD_URLHAUS_REFRESH (default 360m, floor 5m)
 	URLhausMaxURLs int           // YARAD_URLHAUS_MAX_URLS  (per message, default 64)
 
+	// MalwareBazaar attachment-hash lookup (abuse.ch). The SHA256 of each scanned
+	// buffer is matched against a cached set of known-malware sample hashes.
+	// Disabled unless an Auth-Key is set (the SAME abuse.ch key as URLhaus).
+	MBazaarKey     string        // YARAD_MBAZAAR_KEY[_FILE] — abuse.ch Auth-Key
+	MBazaarRefresh time.Duration // YARAD_MBAZAAR_REFRESH (default 24h, floor 5m)
+	MBazaarFeed    string        // YARAD_MBAZAAR_FEED (URL override; default full dump)
+
 	// RuleDenylist suppresses matches for these rule names (case-insensitive).
 	// Public rulesets ship demo/noise rules that are pure false positives for
 	// mail — e.g. Didier Stevens' `http` rule (rtf.yara) is `$="http" nocase`,
@@ -91,6 +98,9 @@ func LoadConfig() *Config {
 		URLhausKey:     envOrFile("YARAD_URLHAUS_KEY"),
 		URLhausRefresh: envDur("YARAD_URLHAUS_REFRESH", 21600),
 		URLhausMaxURLs: envInt("YARAD_URLHAUS_MAX_URLS", 64),
+		MBazaarKey:     envOrFile("YARAD_MBAZAAR_KEY"),
+		MBazaarRefresh: envDur("YARAD_MBAZAAR_REFRESH", 86400),
+		MBazaarFeed:    strings.TrimSpace(os.Getenv("YARAD_MBAZAAR_FEED")),
 		RuleDenylist:   envSet("YARAD_RULE_DENYLIST", "http"),
 	}
 	c.sanitize()

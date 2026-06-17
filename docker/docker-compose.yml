@@ -11,6 +11,9 @@ services:
     # request buffers (max_inflight × max_body). 512m gives burst/GC headroom;
     # 256m was tight (measured ~198 MiB peak). Lower max_inflight/max_body or set
     # an explicit YARAD_MAX_CONCURRENT if you must run leaner.
+    # NOTE: enabling the MalwareBazaar full feed (below) adds ~40 MiB resident
+    # (the hash set) plus a ~100-150 MiB transient spike while the daily dump is
+    # downloaded + unzipped — raise mem_limit to ~768m if you turn it on.
     mem_limit: 512m
 
     # No `ports:` — not published to the host. Reachable only on the internal
@@ -34,6 +37,17 @@ services:
       # YARAD_MAX_CONCURRENT: "auto"   # in-flight scan cap; "auto"=CPU count, or a number
       # YARAD_BACKEND_TIMEOUT: "1"     # queue/admission wait budget (s)
       # YARAD_SCAN_TIMEOUT: "8"        # per-scan libyara budget (s)
+
+      # --- Threat-intel feeds (abuse.ch, opt-in) ----------------------------
+      # One free abuse.ch Auth-Key (https://auth.abuse.ch/) enables BOTH feeds.
+      # Each falls back to disabled when its key is unset. Prefer the _FILE form.
+      # URLhaus — known malware-distribution URLs in the message/macros:
+      # YARAD_URLHAUS_KEY_FILE: /run/secrets/abuse_ch_key
+      # MalwareBazaar — exact SHA256 of each attachment vs known malware samples.
+      # Full dump (~1M hashes) refreshed daily; see the mem_limit note above.
+      # YARAD_MBAZAAR_KEY_FILE: /run/secrets/abuse_ch_key
+      # YARAD_MBAZAAR_REFRESH: "86400" # seconds; floor 300
+      # YARAD_MBAZAAR_FEED: "..."      # override feed URL (default: full dump)
 
       # --- Auth (required) --------------------------------------------------
       # yarad refuses every /scan (503) until a token is set. The rspamd plugin

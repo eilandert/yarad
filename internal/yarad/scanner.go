@@ -15,6 +15,7 @@ import (
 	yara "github.com/hillu/go-yara/v4"
 
 	"github.com/eilandert/rspamd-yarad/internal/extract"
+	"github.com/eilandert/rspamd-yarad/internal/mbazaar"
 	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
 
@@ -63,6 +64,9 @@ type Scanner struct {
 	urlhaus    *urlhaus.Checker
 	urlhausMax int
 
+	// Optional abuse.ch MalwareBazaar attachment-hash lookup (nil when no key).
+	mbazaar *mbazaar.Checker
+
 	// denylist holds rule names (lowercase) whose matches are dropped from every
 	// result — public-ruleset demo/noise rules (e.g. Didier's `http`) that are
 	// pure false positives for mail. nil/empty means no filtering.
@@ -106,10 +110,14 @@ func NewScanner(cfg *Config, logf func(string, ...any)) (*Scanner, error) {
 		srcFile:     cfg.RulesPath,
 		urlhaus:     urlhaus.New(cfg.URLhausKey, cfg.URLhausRefresh, logf), // nil if no key
 		urlhausMax:  cfg.URLhausMaxURLs,
+		mbazaar:     mbazaar.New(cfg.MBazaarKey, cfg.MBazaarRefresh, cfg.MBazaarFeed, logf), // nil if no key
 		denylist:    cfg.RuleDenylist,
 	}
 	if s.urlhaus != nil {
 		logf("URLhaus malware-URL lookup enabled (refresh=%s, max_urls/msg=%d)", cfg.URLhausRefresh, cfg.URLhausMaxURLs)
+	}
+	if s.mbazaar != nil {
+		logf("MalwareBazaar attachment-hash lookup enabled (refresh=%s)", cfg.MBazaarRefresh)
 	}
 	if err := s.Reload(); err != nil {
 		return nil, err
@@ -500,9 +508,19 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 		}
 		out = mergeMatches(out, m)
 	}
-	// Drop denylisted rule names (public-ruleset demo/noise rules) before URLhaus
-	// hits are added, so the synthetic URLHAUS_* matches are never affected.
+	// Drop denylisted rule names (public-ruleset demo/noise rules) before the
+	// synthetic feed matches are added, so MALWAREBAZAAR_*/URLHAUS_* are never
+	// affected by the rule denylist.
 	out = s.filterDenied(out)
+	// MalwareBazaar: exact SHA256 match of the whole scanned buffer (the
+	// attachment, as the plugin POSTed it) against known malware samples —
+	// a direct known-bad verdict independent of the YARA rules. Only the raw
+	// buffer is hashed (samples are whole files, not decompressed macros).
+	if s.mbazaar != nil {
+		for _, h := range s.mbazaar.Check(buf) {
+			out = append(out, Match{Rule: h.Rule(), Tags: []string{"malwarebazaar"}, Meta: map[string]string{"sha256": h.SHA256}})
+		}
+	}
 	// URLhaus: check the raw message and every decompressed macro/RTF stream for
 	// known malware-distribution URLs (incl. defanged ones). Each distinct URL
 	// becomes its own match (deduped across buffers) so the mail history shows
@@ -550,6 +568,15 @@ func (s *Scanner) URLhausMetrics() urlhaus.Metrics {
 		return urlhaus.Metrics{}
 	}
 	return s.urlhaus.Metrics()
+}
+
+// MBazaarMetrics reports the MalwareBazaar checker's state for /metrics, or a
+// disabled snapshot when no Auth-Key is configured.
+func (s *Scanner) MBazaarMetrics() mbazaar.Metrics {
+	if s.mbazaar == nil {
+		return mbazaar.Metrics{}
+	}
+	return s.mbazaar.Metrics()
 }
 
 // scanOne runs the rule set over a single buffer and maps libyara's matches to

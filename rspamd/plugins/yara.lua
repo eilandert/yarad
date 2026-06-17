@@ -16,7 +16,8 @@ Each matched rule is classified (see classify()) into one scoring-tier symbol �
 YARA_MALWARE / YARA_EXPLOIT / YARA_PHISHING / YARA_SUSPICIOUS, or YARA for an
 uncategorized hit — with the matched rules as that symbol's options, shown as
 "rule (source-file.yar)" (traceable, and actionable by force_actions/multimap).
-URLhaus malware-URL hits go to URLHAUS_MALWARE_URL. Per-tier weights live in
+URLhaus malware-URL hits go to URLHAUS_MALWARE_URL; MalwareBazaar exact
+attachment-hash hits go to MALWAREBAZAAR_MALWARE. Per-tier weights live in
 groups.conf (group "YARA").
 
 Scope is configurable (scan_message / scan_parts): the full rfc822 message,
@@ -54,6 +55,10 @@ local settings = {
   -- Separate symbol for yarad's URLhaus malware-URL hits (rule names start
   -- "URLHAUS_"), so they score independently of YARA rule matches.
   urlhaus_symbol = "URLHAUS_MALWARE_URL",
+  -- Separate symbol for yarad's MalwareBazaar attachment-hash hits (rule name
+  -- "MALWAREBAZAAR_MALWARE"): an exact SHA256 match of the attachment against a
+  -- known malware sample — a strong, standalone verdict.
+  mbazaar_symbol = "MALWAREBAZAAR_MALWARE",
   -- What to scan. At least one must be true or the plugin does nothing.
   scan_message = true,         -- the whole rfc822 message in one scan
   scan_parts = true,          -- each MIME part (attachment) separately
@@ -244,6 +249,11 @@ local function check_cb(task)
             if m.rule:find("_HOST") then tag = tag .. " (host)" end
             if m.rule:find("_DEOBF") then tag = tag .. " (deobf)" end
             add(settings.urlhaus_symbol, url .. tag, "u:" .. url)
+          elseif m.rule:sub(1, 14) == "MALWAREBAZAAR_" then
+            -- Exact attachment-hash hit: show the SHA256 (from meta) as the
+            -- option, deduped on the hash, so the history names the bad file.
+            local sha = (type(m.meta) == "table" and m.meta.sha256) or m.rule
+            add(settings.mbazaar_symbol, sha, "mb:" .. sha)
           else
             -- Classify into a scoring tier, and show "rule (source-file)" so a
             -- generic rule name (e.g. "http") is traceable to the ruleset that
@@ -309,6 +319,7 @@ for _, s in ipairs({
   settings.symbol_phishing,
   settings.symbol_suspicious,
   settings.urlhaus_symbol,
+  settings.mbazaar_symbol,
 }) do
   rspamd_config:register_symbol({ name = s, type = "virtual", parent = id })
 end
