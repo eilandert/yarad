@@ -32,13 +32,26 @@ rules reloaded on its own. It's the same shape as the
   {"matches":[{"rule":"Suspicious_Macro","tags":["office"],"meta":{"author":"…"}}]}
   ```
   The list is empty (`[]`, never `null`) when nothing matched.
-* **`GET /health`** — `200` only while a rule set is actually loaded. Wired to the
-  container `HEALTHCHECK`.
+* **`GET /health`** — liveness: `200` while a rule set is loaded. Wired to the
+  container `HEALTHCHECK`; stays `200` during a graceful drain so the container
+  isn't killed mid-shutdown.
+* **`GET /ready`** — readiness: `200` only when rules are loaded **and** the
+  server isn't draining. A load balancer / rspamd should route on this so it
+  stops sending new scans the moment shutdown begins.
+* **`GET /version`** — build + ruleset identity as JSON (`version`,
+  `extractor_version`, `rules`, `fingerprint`, `last_reload_unix`) so a live
+  FP/perf change can be tied to a specific image + rule bundle.
 * **`GET /metrics`** — Prometheus counters: scans, matches, errors, busy
-  rejections, cache hits/misses/coalesced, the loaded rule count, and the
-  document pre-extraction counters (`yarad_extract_docs_total`,
-  `extract_macro_docs_total`, `extract_streams_total`, `extract_failed_total`,
-  `extract_panicked_total`, `extract_encrypted_total`).
+  rejections, cache hits/misses/coalesced, the loaded rule count, the document
+  pre-extraction counters (`yarad_extract_docs_total`, `extract_macro_docs_total`,
+  `extract_streams_total`, `extract_failed_total`, `extract_panicked_total`,
+  `extract_encrypted_total`), and rule-reload activity (`reload_attempts_total`,
+  `reload_success_total`, `reload_failure_total`, `reload_last_timestamp_seconds`,
+  `reload_last_duration_ms`).
+
+On `SIGTERM`/`SIGINT` yarad drains: `/ready` starts returning `503` and in-flight
+scans finish (up to `YARAD_SCAN_TIMEOUT` + 5 s) before the process exits — safe
+for rolling image/rule updates.
 
 ## Built for a real mail firehose
 
@@ -54,7 +67,8 @@ campaigns, one body sent to a dozen recipients, MTA retries. yarad leans on that
 3. **Optional shared cache (Redis/Valkey).** Set `YARAD_REDIS_URL` and several
    yarad replicas share one verdict cache, so you can scale horizontally behind
    rspamd. A slow or dead Redis just means a cache miss; it never blocks mail
-   (200 ms budget, fail-open).
+   (150 ms per-op budget, fail-open, with a circuit breaker that skips Redis
+   entirely after repeated failures so a dead Redis can't hold scan slots).
 
 And it **fails open everywhere**: a scan error, timeout, or even a libyara panic
 is reported to rspamd as "no match". A broken scanner must never hold up mail.

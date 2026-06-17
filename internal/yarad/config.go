@@ -49,6 +49,8 @@ type Config struct {
 
 	Verbose   bool // YARAD_VERBOSE
 	LogStdout bool // YARAD_LOG_STDOUT — info/access to stdout; errors stay stderr
+
+	Version string // build version string, set by main (not from env); for /version
 }
 
 // LoadConfig reads the environment into a Config, applying documented defaults,
@@ -115,7 +117,7 @@ func (c *Config) sanitize() {
 // file (Docker secrets / the 0444 token file pattern) instead of the env.
 func envOrFile(name string) string {
 	if f := os.Getenv(name + "_FILE"); f != "" {
-		if b, err := os.ReadFile(f); err == nil { // #nosec G304 -- operator-provided secret path (*_FILE env), not attacker input
+		if b, err := os.ReadFile(f); err == nil { // #nosec G304 G703 -- operator-provided secret path (*_FILE env), not attacker input
 			return strings.TrimSpace(string(b))
 		}
 	}

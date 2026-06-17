@@ -44,7 +44,12 @@ type Scanner struct {
 
 	// Observability for the OLE/OOXML pre-extract path (see ExtractMetrics).
 	// Without these the document-extraction code is invisible in /metrics.
-	exDocs, exStreams, exMacroDocs, exFailed, exPanicked, exEncrypted atomic.Int64
+	// Uint64 (monotonic counters) so /metrics needs no signed→unsigned cast.
+	exDocs, exStreams, exMacroDocs, exFailed, exPanicked, exEncrypted atomic.Uint64
+
+	// Rule-reload observability (see ReloadMetrics).
+	reloadAttempts, reloadOK, reloadFail atomic.Uint64
+	reloadLastUnix, reloadLastMillis     atomic.Int64
 }
 
 // ExtractMetrics is a snapshot of the document pre-extraction counters, surfaced
@@ -52,12 +57,12 @@ type Scanner struct {
 // OLE/OOXML, how many carried macros, how often the parser failed/panicked, and
 // how many were encrypted (and thus not decryptable here).
 type ExtractMetrics struct {
-	Docs      int64 // buffers recognised as an OLE2/OOXML container
-	Streams   int64 // decompressed macro blobs scanned (sum across docs)
-	MacroDocs int64 // documents that yielded >=1 macro stream
-	Failed    int64 // container parse attempts that errored
-	Panicked  int64 // parser panics recovered (subset of Failed)
-	Encrypted int64 // ECMA-376 encrypted OOXML (not decrypted)
+	Docs      uint64 // buffers recognised as an OLE2/OOXML container
+	Streams   uint64 // decompressed macro blobs scanned (sum across docs)
+	MacroDocs uint64 // documents that yielded >=1 macro stream
+	Failed    uint64 // container parse attempts that errored
+	Panicked  uint64 // parser panics recovered (subset of Failed)
+	Encrypted uint64 // ECMA-376 encrypted OOXML (not decrypted)
 }
 
 // ExtractMetrics returns the current pre-extraction counters.
@@ -92,12 +97,40 @@ func NewScanner(cfg *Config, logf func(string, ...any)) (*Scanner, error) {
 // RuleCount reports how many rules are in the active set (for /health and logs).
 func (s *Scanner) RuleCount() int64 { return s.count.Load() }
 
+// ReloadMetrics is a snapshot of rule-reload activity, surfaced on /metrics so a
+// SIGHUP that silently fails (e.g. a bad rule edit) is visible to alerting
+// instead of only appearing in logs.
+type ReloadMetrics struct {
+	Attempts   uint64 // Reload() calls (includes the initial boot load)
+	Successes  uint64
+	Failures   uint64
+	LastUnix   int64 // unix seconds of the last successful reload
+	LastMillis int64 // wall-clock duration of the last reload attempt
+	Rules      int64 // rule count after the last successful reload
+}
+
+// ReloadMetrics returns the current reload counters.
+func (s *Scanner) ReloadMetrics() ReloadMetrics {
+	return ReloadMetrics{
+		Attempts:   s.reloadAttempts.Load(),
+		Successes:  s.reloadOK.Load(),
+		Failures:   s.reloadFail.Load(),
+		LastUnix:   s.reloadLastUnix.Load(),
+		LastMillis: s.reloadLastMillis.Load(),
+		Rules:      s.count.Load(),
+	}
+}
+
 // Reload (re)compiles the rule set and atomically swaps it in. A failure leaves
 // the previous set active — a broken edit to the rules dir must never disarm a
 // running scanner. Safe to call from a SIGHUP handler concurrently with scans.
 func (s *Scanner) Reload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.reloadAttempts.Add(1)
+	start := time.Now()
+	defer func() { s.reloadLastMillis.Store(time.Since(start).Milliseconds()) }()
 
 	var (
 		rules *yara.Rules
@@ -109,6 +142,7 @@ func (s *Scanner) Reload() error {
 		rules, err = compileDir(s.srcDir, s.logf)
 	}
 	if err != nil {
+		s.reloadFail.Add(1)
 		s.logf("ERROR reload failed, keeping previous rules: %v", err)
 		return err
 	}
@@ -118,6 +152,8 @@ func (s *Scanner) Reload() error {
 	s.count.Store(int64(len(list)))
 	fp := fingerprint(list)
 	s.fp.Store(&fp)
+	s.reloadOK.Add(1)
+	s.reloadLastUnix.Store(time.Now().Unix())
 	// The previous *yara.Rules is intentionally NOT Destroy()ed here: an in-flight
 	// scan may still hold the pointer it loaded before the swap, and freeing the
 	// native rules under it would crash. go-yara registers a runtime finalizer on
@@ -313,7 +349,7 @@ func (s *Scanner) Scan(buf []byte) ([]Match, error) {
 	}
 	if n := len(res.Streams); n > 0 {
 		s.exMacroDocs.Add(1)
-		s.exStreams.Add(int64(n))
+		s.exStreams.Add(uint64(n))
 	}
 	// Enrich with the decompressed macro source. A sub-scan error must NOT
 	// discard the matches already found on the raw bytes, so it is logged and

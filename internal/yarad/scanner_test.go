@@ -226,6 +226,41 @@ func TestScanOneVBAExternalVariable(t *testing.T) {
 	}
 }
 
+func TestReloadMetrics(t *testing.T) {
+	s := newScanner(t, writeRules(t, eicarRule))
+	// NewScanner already did the initial load: 1 attempt, 1 success, rules=1.
+	rm := s.ReloadMetrics()
+	if rm.Attempts < 1 || rm.Successes < 1 || rm.Rules != 1 {
+		t.Fatalf("boot reload not counted: %+v", rm)
+	}
+	before := rm.Successes
+	if err := s.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	rm = s.ReloadMetrics()
+	if rm.Successes != before+1 {
+		t.Errorf("successful reload not counted: %+v", rm)
+	}
+	if rm.LastUnix == 0 {
+		t.Error("last reload timestamp not set")
+	}
+}
+
+func TestReloadMetricsFailure(t *testing.T) {
+	dir := writeRules(t, eicarRule)
+	s := newScanner(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "eicar.yar"), []byte("rule broken {"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failBefore := s.ReloadMetrics().Failures
+	if err := s.Reload(); err == nil {
+		t.Error("broken reload should error")
+	}
+	if s.ReloadMetrics().Failures != failBefore+1 {
+		t.Error("failed reload not counted")
+	}
+}
+
 func TestMergeMatches(t *testing.T) {
 	raw := []Match{{Rule: "A"}, {Rule: "B"}}
 	got := mergeMatches(raw, []Match{{Rule: "B"}, {Rule: "C"}})

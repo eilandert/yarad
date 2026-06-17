@@ -1,6 +1,7 @@
 package yarad
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/eilandert/rspamd-yarad/internal/extract"
 )
 
 // ScanEngine is what the server dispatches a request to. *Scanner is the
@@ -27,6 +30,8 @@ type ScanEngine interface {
 	Fingerprint() string
 	// ExtractMetrics reports the OLE/OOXML pre-extraction counters for /metrics.
 	ExtractMetrics() ExtractMetrics
+	// ReloadMetrics reports rule-reload activity for /metrics.
+	ReloadMetrics() ReloadMetrics
 }
 
 // scanResponse is the JSON the rspamd plugin parses. Matches is empty (not
@@ -50,6 +55,9 @@ type Server struct {
 	}
 	info *log.Logger // access/info — stdout when YARAD_LOG_STDOUT, else stderr
 	errl *log.Logger // errors/warnings — always stderr
+
+	httpSrv  atomic.Pointer[http.Server] // set by ListenAndServe; used by Shutdown
+	draining atomic.Bool                 // true once Shutdown begins -> /ready 503s
 }
 
 func newLoggers(cfg *Config) (info, errl *log.Logger) {
@@ -93,7 +101,8 @@ func (s *Server) vlogf(format string, a ...any) {
 	}
 }
 
-// ListenAndServe binds and serves until the process is signalled.
+// ListenAndServe binds and serves until Shutdown is called (then it returns
+// http.ErrServerClosed). The *http.Server is published so Shutdown can drain it.
 func (s *Server) ListenAndServe() error {
 	addr := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
 	srv := &http.Server{
@@ -104,8 +113,22 @@ func (s *Server) ListenAndServe() error {
 		WriteTimeout:      s.cfg.BackendTimeout + 25*time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	s.httpSrv.Store(srv)
 	s.logStartup(addr)
 	return srv.ListenAndServe()
+}
+
+// Shutdown marks the server draining (so /ready starts returning 503 and load
+// balancers stop sending new work) and gracefully drains in-flight requests
+// until ctx expires. Safe to call before ListenAndServe has stored the server.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.draining.Store(true)
+	srv := s.httpSrv.Load()
+	if srv == nil {
+		return nil
+	}
+	s.logf("draining: shutting down, waiting for in-flight scans")
+	return srv.Shutdown(ctx)
 }
 
 func (s *Server) logStartup(addr string) {
@@ -174,13 +197,30 @@ func cgroupMemLimitMiB() int64 {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/health":
-		// Healthy only when a rule set is actually loaded; a scanner with zero
-		// rules is broken and should fail the container HEALTHCHECK.
+		// Liveness: healthy as long as a rule set is loaded — a scanner with zero
+		// rules is broken and should fail the container HEALTHCHECK. Deliberately
+		// stays 200 while draining so an in-progress graceful shutdown doesn't get
+		// the container killed before in-flight scans finish.
 		if s.engine.RuleCount() < 1 {
 			writeText(w, http.StatusServiceUnavailable, "no rules")
 			return
 		}
 		writeText(w, http.StatusOK, "ok")
+	case r.Method == http.MethodGet && r.URL.Path == "/ready":
+		// Readiness: are we accepting NEW scans? Rules loaded AND not draining.
+		// A load balancer / rspamd should stop routing here during shutdown even
+		// though /health stays green for the drain window.
+		if s.engine.RuleCount() < 1 {
+			writeText(w, http.StatusServiceUnavailable, "no rules")
+			return
+		}
+		if s.draining.Load() {
+			writeText(w, http.StatusServiceUnavailable, "draining")
+			return
+		}
+		writeText(w, http.StatusOK, "ready")
+	case r.Method == http.MethodGet && r.URL.Path == "/version":
+		s.serveVersion(w)
 	case r.Method == http.MethodGet && r.URL.Path == "/metrics":
 		s.serveMetrics(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/scan":
@@ -188,6 +228,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeText(w, http.StatusNotFound, "not found")
 	}
+}
+
+// serveVersion reports build + ruleset identity so a live FP/perf change can be
+// correlated with a specific image and rule bundle. Unauthenticated like
+// /health: it reveals version/rule-count/fingerprint, not message content.
+func (s *Server) serveVersion(w http.ResponseWriter) {
+	rl := s.engine.ReloadMetrics()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":           s.cfg.Version,
+		"extractor_version": extract.Version,
+		"rules":             s.engine.RuleCount(),
+		"fingerprint":       s.engine.Fingerprint(),
+		"last_reload_unix":  rl.LastUnix,
+		"repo":              RepoURL,
+	})
 }
 
 // maxBodyHardLimit is a constant ceiling above any MaxBody so the int(length)
@@ -364,12 +419,26 @@ func (s *Server) serveMetrics(w http.ResponseWriter) {
 
 	// OLE/OOXML pre-extraction counters — visibility into the document path.
 	ex := s.engine.ExtractMetrics()
-	fm("extract_docs_total", "attachments recognised as OLE2/OOXML containers", uint64(ex.Docs))
-	fm("extract_macro_docs_total", "documents that yielded >=1 decompressed macro stream", uint64(ex.MacroDocs))
-	fm("extract_streams_total", "decompressed macro streams scanned", uint64(ex.Streams))
-	fm("extract_failed_total", "container parse attempts that errored", uint64(ex.Failed))
-	fm("extract_panicked_total", "parser panics recovered (subset of failed)", uint64(ex.Panicked))
-	fm("extract_encrypted_total", "ECMA-376 encrypted OOXML seen (not decrypted)", uint64(ex.Encrypted))
+	fm("extract_docs_total", "attachments recognised as OLE2/OOXML containers", ex.Docs)
+	fm("extract_macro_docs_total", "documents that yielded >=1 decompressed macro stream", ex.MacroDocs)
+	fm("extract_streams_total", "decompressed macro streams scanned", ex.Streams)
+	fm("extract_failed_total", "container parse attempts that errored", ex.Failed)
+	fm("extract_panicked_total", "parser panics recovered (subset of failed)", ex.Panicked)
+	fm("extract_encrypted_total", "ECMA-376 encrypted OOXML seen (not decrypted)", ex.Encrypted)
+
+	// Rule-reload activity — so a SIGHUP that silently fails to compile is visible
+	// to alerting, not just buried in logs.
+	rl := s.engine.ReloadMetrics()
+	fm("reload_attempts_total", "rule reload attempts (incl. boot load)", rl.Attempts)
+	fm("reload_success_total", "successful rule reloads", rl.Successes)
+	fm("reload_failure_total", "failed rule reloads (previous set kept)", rl.Failures)
+	gauge := func(name, help string, v int64) {
+		b.WriteString("# HELP yarad_" + name + " " + help + "\n")
+		b.WriteString("# TYPE yarad_" + name + " gauge\n")
+		b.WriteString("yarad_" + name + " " + strconv.FormatInt(v, 10) + "\n")
+	}
+	gauge("reload_last_timestamp_seconds", "unix time of the last successful reload", rl.LastUnix)
+	gauge("reload_last_duration_ms", "wall-clock duration of the last reload attempt", rl.LastMillis)
 	writeRaw(w, http.StatusOK, "text/plain; version=0.0.4", []byte(b.String()))
 }
 
