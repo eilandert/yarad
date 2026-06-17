@@ -33,7 +33,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi"
+const Version = "ole2+msi+vbe"
 
 // OLE2/CFB compound-document magic (legacy .doc/.xls, the vbaProject.bin
 // embedded in OOXML, AND the encrypted-OOXML wrapper) and the local-file-header
@@ -115,6 +115,10 @@ type Result struct {
 	// IsMSI is true when buf was recognised as a Windows Installer database (an
 	// OLE2 with the MSI root CLSID) and its streams were dumped for scanning.
 	IsMSI bool
+	// EncodedScript is true when >=1 MS Script Encoder block (#@~^...^#~@,
+	// i.e. an encoded VBScript/JScript, as in .vbe/.jse or embedded in a
+	// .wsf/.hta/.html/.sct) was found and decoded to cleartext for scanning.
+	EncodedScript bool
 }
 
 // Extract reports the plaintext hidden inside an OLE2/OOXML container — the
@@ -144,6 +148,13 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 	case bytes.HasPrefix(buf, zipMagic):
 		res.IsDoc = true
 		fromOOXML(buf, &res, deadline)
+	default:
+		// Not a container. The buffer may still hide an MS Script Encoder block
+		// (#@~^...^#~@) — an encoded VBScript/JScript that raw-byte rules can't see
+		// because the script source is substituted. Found in .vbe/.jse files and
+		// embedded in .wsf/.hta/.html/.sct. Decode every block to cleartext so the
+		// keyword rules match. Best-effort; non-script input yields nothing.
+		fromEncodedScript(buf, &res)
 	}
 	return res
 }
