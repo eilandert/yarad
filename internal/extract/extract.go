@@ -33,7 +33,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote"
+const Version = "ole2+msi+vbe+msg+onenote+archive"
 
 // OLE2/CFB compound-document magic (legacy .doc/.xls, the vbaProject.bin
 // embedded in OOXML, AND the encrypted-OOXML wrapper) and the local-file-header
@@ -132,6 +132,9 @@ type Result struct {
 	// message store) and its nested attachment data streams were pulled out for
 	// scanning.
 	IsMSG bool
+	// IsArchive is true when buf (or a nested member) was a recognised archive
+	// (zip/gz/7z/rar/tar) whose members were unpacked and surfaced for scanning.
+	IsArchive bool
 	// IsOneNote is true when buf was recognised as a OneNote section/TOC
 	// (.one/.onetoc2) and its embedded FileDataStoreObject payloads were carved
 	// out for scanning.
@@ -168,7 +171,20 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 		fromOLE(buf, &res, deadline)
 	case bytes.HasPrefix(buf, zipMagic):
 		res.IsDoc = true
+		// A zip is either an OOXML/ODF Office document (handle via the macro path
+		// only — dumping its parts would scan ordinary body XML and invite FPs) or
+		// a plain archive whose members may be droppers (unpack them). Decide by
+		// the OOXML marker; never member-dump an Office doc.
 		fromOOXML(buf, &res, deadline)
+		if !isOfficeZip(buf) {
+			fromArchive(buf, &res, &archiveBudget{}, 0)
+		}
+	case isArchive(buf):
+		// A non-zip archive (gz/7z/rar). Unpack members (recursing into nested
+		// archives/containers) so a dropped payload is scanned, not just the
+		// opaque outer bytes.
+		res.IsDoc = true
+		fromArchive(buf, &res, &archiveBudget{}, 0)
 	case isOneNote(buf):
 		// A standalone OneNote section (.one) — neither OLE2 nor ZIP. Carve its
 		// embedded FileDataStoreObject payloads (the maldoc delivery vector).
