@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   # Authoritative gate: build + test exactly as the production image does (CGO
@@ -20,11 +21,24 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: docker/setup-buildx-action@v3
+
       - name: build test stage (go vet + go test -race in-image)
-        run: docker build --target test -f docker/Dockerfile -t yarad-test .
+        run: |
+          docker buildx build --target test -f docker/Dockerfile -t yarad-test \
+            --load \
+            --cache-from type=gha,scope=yarad-build \
+            --cache-to type=gha,mode=max,scope=yarad-build \
+            .
 
       - name: build final image
-        run: docker build --target final -f docker/Dockerfile -t yarad:ci --build-arg CACHEBUST=ci-${{ github.sha }} .
+        run: |
+          docker buildx build --target final -f docker/Dockerfile -t yarad:ci \
+            --load \
+            --cache-from type=gha,scope=yarad-build \
+            --cache-to type=gha,mode=max,scope=yarad-build \
+            --build-arg CACHEBUST=rules-${{ hashFiles('docker/local-rules/**','docker/fetch-rules.sh','docker/compile-rules.sh','docker/Dockerfile') }} \
+            .
 
       - name: smoke (EICAR rule, scan/clean/auth/health/metrics)
         run: |
@@ -220,7 +234,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version-file: go.mod
+          cache: true
           cache-dependency-path: go.sum
       - name: install libyara (CGO dep for build-based linters)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libyara-dev
@@ -273,7 +288,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version-file: go.mod
+          cache: true
           cache-dependency-path: go.sum
       - name: install libyara + clang
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libyara-dev clang
@@ -296,7 +312,8 @@ jobs:
           languages: go
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version-file: go.mod
+          cache: true
           cache-dependency-path: go.sum
       - name: install libyara
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libyara-dev
