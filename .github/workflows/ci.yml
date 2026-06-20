@@ -475,7 +475,7 @@ jobs:
         run: docker run --rm -v "$PWD:/src" -w /src ghcr.io/google/osv-scanner:v1.9.2 --lockfile=go.mod
 
       - name: zizmor (Actions supply-chain hardening)
-        run: docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/woodruffw/zizmor:v1.7.0 --format plain .github/workflows/
+        run: docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/woodruffw/zizmor:1.6.0 --format plain .github/workflows/
 
   # NOTE: asan, codeql and fuzz are DEEP, slow, low-per-PR-yield checks — they
   # run MONTHLY (+ on demand) in maintenance.yml, NOT on every PR. The per-PR
