@@ -52,6 +52,29 @@ jobs:
             --build-arg CACHEBUST=rules-${{ hashFiles('docker/local-rules/**','docker/fetch-rules.sh','docker/compile-rules.sh','docker/Dockerfile') }} \
             .
 
+      - name: trivy image scan (HIGH,CRITICAL)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.62.1 image \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --timeout 5m \
+            yarad:ci
+
+      - name: generate SBOM (SPDX)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            anchore/syft:v1.22.0 yarad:ci -o spdx-json > sbom.spdx.json
+      - name: upload SBOM artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          retention-days: 90
+
       - name: smoke (EICAR rule, scan/clean/auth/health/metrics)
         run: |
           set -euo pipefail
