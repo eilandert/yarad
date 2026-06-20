@@ -126,6 +126,85 @@ func TestExtractRTFGarbageObjData(t *testing.T) {
 	_ = res.Streams
 }
 
+// ---------- RTF evasion detection (PR-12) ----------
+
+// Plain \objupdate must emit the RTF-OBJUPDATE marker stream.
+func TestRTFObjUpdatePlain(t *testing.T) {
+	buf := []byte(`{\rtf1\ansi {\object\objlink\objupdate {\*\objdata 4d5a}}}`)
+	res := Extract(buf, time.Time{})
+	if !res.IsRTF {
+		t.Fatal("RTF not flagged IsRTF")
+	}
+	if !streamsContain(res, "RTF-OBJUPDATE") {
+		t.Errorf("plain \\objupdate: RTF-OBJUPDATE marker not emitted; streams=%d", len(res.Streams))
+	}
+}
+
+// \objupdate split by an empty group obfuscation must still emit the marker.
+func TestRTFObjUpdateObfuscated(t *testing.T) {
+	// Obfuscation: \objup{}date — empty group between control-word fragments.
+	buf := []byte(`{\rtf1\ansi {\object\objlink\objup{}date {\*\objdata 4d5a}}}`)
+	res := Extract(buf, time.Time{})
+	if !streamsContain(res, "RTF-OBJUPDATE") {
+		t.Errorf("obfuscated \\objupdate (empty group split): RTF-OBJUPDATE not emitted; streams=%d", len(res.Streams))
+	}
+}
+
+// Plain \ddeauto must emit RTF-DDEAUTO (and RTF-DDE, since \dde is a prefix).
+func TestRTFDDEAutoPlain(t *testing.T) {
+	buf := []byte(`{\rtf1\ansi {\field{\*\fldinst \ddeauto "cmd" "/k calc"}}}`)
+	res := Extract(buf, time.Time{})
+	if !streamsContain(res, "RTF-DDEAUTO") {
+		t.Errorf("plain \\ddeauto: RTF-DDEAUTO not emitted; streams=%d", len(res.Streams))
+	}
+}
+
+// \ddeauto split by {\*\foo} optional-destination group must still be detected.
+func TestRTFDDEAutoObfuscated(t *testing.T) {
+	// Obfuscation: \dde{\*\junk}auto — optional-destination group in the middle.
+	buf := []byte(`{\rtf1\ansi {\field{\*\fldinst \dde{\*\junk}auto "cmd" "/k calc"}}}`)
+	res := Extract(buf, time.Time{})
+	if !streamsContain(res, "RTF-DDEAUTO") {
+		t.Errorf("obfuscated \\ddeauto (\\*\\junk split): RTF-DDEAUTO not emitted; streams=%d", len(res.Streams))
+	}
+}
+
+// Plain \dde (without auto) must emit RTF-DDE.
+func TestRTFDDEPlain(t *testing.T) {
+	buf := []byte(`{\rtf1\ansi {\field{\*\fldinst \dde "Excel.exe" "Sheet1!R1C1"}}}`)
+	res := Extract(buf, time.Time{})
+	if !streamsContain(res, "RTF-DDE") {
+		t.Errorf("plain \\dde: RTF-DDE not emitted; streams=%d", len(res.Streams))
+	}
+}
+
+// \dde with \bin<N> binary run injected before the keyword must still be detected.
+func TestRTFDDEObfuscatedBin(t *testing.T) {
+	// Obfuscation: \bin3XXX\dde — 3-byte binary run before the control word.
+	buf := []byte("{\x5crtf1\\ansi {\\field{\\*\\fldinst \\bin3\x00\x00\x00\\dde \"cmd\" \"/k calc\"}}}")
+	res := Extract(buf, time.Time{})
+	if !streamsContain(res, "RTF-DDE") {
+		t.Errorf("obfuscated \\dde (\\bin<N> prefix): RTF-DDE not emitted; streams=%d", len(res.Streams))
+	}
+}
+
+// A benign RTF with no evasion control words must NOT emit any evasion markers.
+func TestRTFEvasionBenign(t *testing.T) {
+	buf := []byte(`{\rtf1\ansi\ansicpg1252\deff0 {\fonttbl{\f0\fswiss Arial;}}` +
+		`{\colortbl ;\red0\green0\blue0;}` +
+		`\f0\fs24 Hello, this is a normal document with no malicious fields.\par}`)
+	res := Extract(buf, time.Time{})
+	if !res.IsRTF {
+		t.Fatal("RTF not flagged IsRTF")
+	}
+	for _, s := range res.Streams {
+		switch string(s) {
+		case "RTF-OBJUPDATE", "RTF-DDEAUTO", "RTF-DDE":
+			t.Errorf("benign RTF emitted evasion marker: %q", s)
+		}
+	}
+}
+
 // Multiple \objdata groups are each carved, bounded by maxRTFObjects.
 func TestExtractRTFMultipleObjects(t *testing.T) {
 	s1 := buildOle10Native("a.exe", "a.exe", "a.exe", []byte("MZ first rtf objdata payload"), 0)

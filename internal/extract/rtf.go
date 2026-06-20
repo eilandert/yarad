@@ -2,6 +2,7 @@ package extract
 
 import (
 	"bytes"
+	"strings"
 	"time"
 
 	"www.velocidex.com/golang/oleparse"
@@ -22,6 +23,13 @@ import (
 // (#14), which only covered the OLE2-storage case; here the package rides inside
 // RTF hex instead of inside an Office document's storage.
 //
+// RTF evasion heuristics (PR-12): fromRTF also detects three high-signal evasion
+// control words — \objupdate (auto-updating OLE link), \ddeauto, and \dde — and
+// emits synthetic ASCII marker streams for each so YARA rules match them.
+// Control-word obfuscation (fake/empty groups, \* groups, \bin<N> runs, hex with
+// interleaved whitespace) is handled by rtfNormalise before matching. Bounded
+// by the same maxRTF* caps; fail-open.
+//
 // Best-effort and fail-open: a malformed group is skipped, never fatal (Extract's
 // recover still covers a panic).
 
@@ -35,6 +43,17 @@ const (
 	maxBytesPerRTFObject = 16 << 20
 	// maxTotalRTF caps cumulative carved/decoded bytes from one document.
 	maxTotalRTF = 48 << 20
+
+	// maxRTFNormalise caps the prefix of RTF text fed through rtfNormalise for
+	// evasion-control-word detection. A full-document scan is not needed because
+	// the control words of interest appear near the document root.
+	maxRTFNormalise = 256 << 10 // 256 KiB
+
+	// Synthetic ASCII markers emitted to res.Streams so YARA rules can match
+	// the high-signal evasion control words without needing to parse RTF syntax.
+	rtfMarkerObjUpdate = "RTF-OBJUPDATE"
+	rtfMarkerDDEAuto   = "RTF-DDEAUTO"
+	rtfMarkerDDE       = "RTF-DDE"
 )
 
 // utf8BOM is the UTF-8 byte-order mark some editors prepend to RTF.
@@ -59,8 +78,17 @@ func isRTF(buf []byte) bool {
 // .msg); for a bare OLENativeStream it carves the native file via
 // carveOle10Native. Sets res.IsRTF whenever the buffer is RTF (whether or not any
 // object decoded). Bounded by the maxRTF* caps.
+//
+// Also detects RTF evasion control words (\objupdate, \ddeauto, \dde) after
+// normalising out common obfuscation (interleaved groups, \bin<N> skips, hex
+// whitespace) and emits synthetic ASCII marker streams for YARA matching.
 func fromRTF(buf []byte, res *Result, deadline time.Time) {
 	res.IsRTF = true
+
+	// Evasion detection: normalise a bounded prefix of the RTF and scan for
+	// high-signal control words. Each marker is emitted at most once.
+	rtfDetectEvasion(buf, res)
+
 	var total, objs int
 	rest := buf
 	for {
@@ -88,6 +116,150 @@ func fromRTF(buf []byte, res *Result, deadline time.Time) {
 		}
 		total += len(blob)
 		carveRTFObject(blob, res, deadline)
+	}
+}
+
+// rtfNormalise strips common RTF control-word obfuscation from a bounded prefix
+// of buf and returns a lowercase string suitable for keyword scanning. It removes:
+//   - \* optional-destination groups and their closing brace (e.g. {\*\foo ...})
+//   - Entire empty groups {}
+//   - \bin<N> binary runs (skip N raw bytes following the control word)
+//   - Hex runs \'XX (already-ASCII-hex encoded characters — decoded to actual char)
+//   - Whitespace between \ and the next letter (some obfuscators insert CR/LF)
+//
+// The result is NOT a parseable RTF document; it is only useful for detecting the
+// presence of specific control words within the first maxRTFNormalise bytes.
+func rtfNormalise(buf []byte) string {
+	if len(buf) > maxRTFNormalise {
+		buf = buf[:maxRTFNormalise]
+	}
+	var sb strings.Builder
+	sb.Grow(len(buf))
+	i := 0
+	for i < len(buf) {
+		c := buf[i]
+		switch {
+		case c == '\\' && i+1 < len(buf):
+			next := buf[i+1]
+			if next == '\'' && i+3 < len(buf) {
+				// \'XX hex escape — decode to the actual byte value (printable range).
+				hi := hexNibble(buf[i+2])
+				lo := hexNibble(buf[i+3])
+				if hi >= 0 && lo >= 0 {
+					sb.WriteByte(byte(hi<<4 | lo)) // #nosec G115 -- hi∈[0,15] lo∈[0,15]; max 255, fits byte
+					i += 4
+					continue
+				}
+			}
+			if next == '*' {
+				// \* optional-destination marker: drop '\*' and the destination
+				// control word that follows (e.g. {\*\junk} or {\*\fldinst}).
+				// Surrounding {} are dropped by the '{'/'}' cases below.
+				// We keep the group's remaining content so keywords like \dde
+				// inside {\*\fldinst \ddeauto ...} are still visible, and so
+				// mid-keyword obfuscation like \dde{\*\junk}auto collapses to
+				// \ddeauto (braces dropped, \*\junk dropped, tokens merge).
+				i += 2 // skip '\' + '*'
+				// The destination name is itself a control word: skip its '\'.
+				if i < len(buf) && buf[i] == '\\' {
+					i++
+				}
+				// Skip the control-word letters (e.g. "junk", "fldinst").
+				for i < len(buf) && buf[i] >= 'a' && buf[i] <= 'z' {
+					i++
+				}
+				// Skip optional numeric parameter.
+				for i < len(buf) && buf[i] >= '0' && buf[i] <= '9' {
+					i++
+				}
+				// Skip the single control-word delimiter (one space or CR/LF).
+				if i < len(buf) && (buf[i] == ' ' || buf[i] == '\r' || buf[i] == '\n') {
+					i++
+				}
+				continue
+			}
+			if next == '\r' || next == '\n' {
+				// Whitespace injected between '\' and keyword letters — skip newline.
+				i += 2
+				continue
+			}
+			// Check for \bin<N>: consume N raw bytes after the control word.
+			if next >= 'a' && next <= 'z' {
+				j := i + 1
+				for j < len(buf) && buf[j] >= 'a' && buf[j] <= 'z' {
+					j++
+				}
+				kw := string(buf[i+1 : j])
+				if kw == "bin" {
+					// Parse the numeric argument.
+					k := j
+					for k < len(buf) && buf[k] >= '0' && buf[k] <= '9' {
+						k++
+					}
+					n := 0
+					for _, d := range buf[j:k] {
+						n = n*10 + int(d-'0')
+						if n > maxRTFNormalise {
+							n = maxRTFNormalise
+							break
+						}
+					}
+					i = k + n // skip delimiter + binary bytes
+					if i > len(buf) {
+						i = len(buf)
+					}
+					continue
+				}
+			}
+			sb.WriteByte('\\')
+			i++
+		case c == '{' || c == '}':
+			// Drop group markers; they break control-word recognition across group
+			// boundaries (e.g. `\dde{}auto`).
+			i++
+		default:
+			sb.WriteByte(c)
+			i++
+		}
+	}
+	return strings.ToLower(sb.String())
+}
+
+// hexNibble returns the value 0-15 of an ASCII hex digit, or -1 if not hex.
+func hexNibble(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	case c >= 'A' && c <= 'F':
+		return int(c-'A') + 10
+	}
+	return -1
+}
+
+// rtfDetectEvasion normalises a bounded RTF prefix and emits synthetic ASCII
+// marker streams for each detected evasion control word. Each marker is appended
+// at most once (duplicate check against existing streams is not needed — the
+// function itself guards via local booleans, and YARA string matches are not
+// counted). Bounded by maxRTFNormalise; fail-open (no panic on malformed input).
+func rtfDetectEvasion(buf []byte, res *Result) {
+	norm := rtfNormalise(buf)
+
+	// \objupdate — auto-updating OLE link (loads remote resource on open).
+	if strings.Contains(norm, `\objupdate`) {
+		res.Streams = append(res.Streams, []byte(rtfMarkerObjUpdate))
+	}
+
+	// \ddeauto — DDE auto-execute field (match before \dde to avoid double-emit).
+	hasDDEAuto := strings.Contains(norm, `\ddeauto`)
+	if hasDDEAuto {
+		res.Streams = append(res.Streams, []byte(rtfMarkerDDEAuto))
+	}
+
+	// \dde — DDE field (emit even when \ddeauto is absent; both are high-signal).
+	if strings.Contains(norm, `\dde`) {
+		res.Streams = append(res.Streams, []byte(rtfMarkerDDE))
 	}
 }
 
