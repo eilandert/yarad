@@ -138,7 +138,10 @@ func processXLMFoldSheet(sf *zip.File, out *[][]byte, totalOutput *int, deadline
 			if len(content) == 0 || len(content) > maxXLMFoldFormulaLen {
 				continue
 			}
-			folded := foldXLMFormula(content)
+			// Pass the deadline into the fold recursion (STAB-2): a single
+			// pathological 64KB formula folded across the depth-16 recursion must
+			// be able to bail mid-fold, not only at this per-formula boundary.
+			folded := foldXLMFormulaDepth(content, 0, deadline)
 			if len(folded) < minXLMFoldResult {
 				continue
 			}
@@ -191,17 +194,23 @@ func emitDangerousMarkers(folded string, out *[][]byte) {
 // Anything it cannot fold (cell refs, unknown functions) is skipped, and the
 // successfully folded portions are concatenated. The goal is to reassemble
 // obfuscated strings like =CHAR(104)&CHAR(116)&"tp://evil.com" → "http://evil.com".
+// foldXLMFormula folds with no deadline (callers that aren't on the scan
+// wall-clock path — unit/fuzz tests). expired() is false on a zero time, so this
+// behaves exactly as before deadline plumbing was added.
 func foldXLMFormula(formula string) string {
-	return foldXLMFormulaDepth(formula, 0)
+	return foldXLMFormulaDepth(formula, 0, time.Time{})
 }
 
-// foldXLMFormulaDepth is foldXLMFormula with an explicit recursion depth.
-// foldPart→foldFunctionCall recurse back here with depth+1; at maxXLMFoldDepth
-// we stop descending into function arguments and fold the parts flat so a
-// pathologically nested formula cannot overflow the stack (a fatal crash that
-// recover() cannot trap).
-func foldXLMFormulaDepth(formula string, depth int) string {
-	if len(formula) == 0 {
+// foldXLMFormulaDepth is foldXLMFormula with an explicit recursion depth and a
+// deadline. foldPart→foldFunctionCall recurse back here with depth+1; at
+// maxXLMFoldDepth we stop descending into function arguments and fold the parts
+// flat so a pathologically nested formula cannot overflow the stack (a fatal
+// crash that recover() cannot trap). The deadline is checked at entry and inside
+// the parts loop (STAB-2) so a single oversized/wide formula bails mid-fold
+// rather than only at the per-formula boundary in processXLMFoldSheet; on expiry
+// we return what we have folded so far.
+func foldXLMFormulaDepth(formula string, depth int, deadline time.Time) string {
+	if len(formula) == 0 || expired(deadline) {
 		return ""
 	}
 
@@ -217,13 +226,19 @@ func foldXLMFormulaDepth(formula string, depth int) string {
 	var buf strings.Builder
 	buf.Grow(min(len(s), 4096))
 
-	for _, part := range parts {
+	for i, part := range parts {
+		// Bail mid-formula on deadline: a formula split into thousands of parts
+		// (each a CHAR()/function call) must not run the whole loop once the scan
+		// budget is spent. Check every 64 parts to keep time.Now() off the hot path.
+		if i&63 == 0 && expired(deadline) {
+			break
+		}
 		part = strings.TrimSpace(part)
 		if len(part) == 0 {
 			continue
 		}
 
-		if folded, ok := foldPart(part, depth); ok {
+		if folded, ok := foldPart(part, depth, deadline); ok {
 			buf.WriteString(folded)
 		}
 		// If we can't fold a part, skip it — emit what we can.
@@ -279,8 +294,9 @@ func splitOnConcat(s string) []string {
 
 // foldPart tries to fold a single formula part (between & operators).
 // Returns the folded string and true if successful. depth is the current
-// recursion depth, propagated to foldFunctionCall to bound nesting.
-func foldPart(part string, depth int) (string, bool) {
+// recursion depth, propagated to foldFunctionCall to bound nesting; deadline is
+// propagated so a nested function call bails with the rest of the fold.
+func foldPart(part string, depth int, deadline time.Time) (string, bool) {
 	trimmed := strings.TrimSpace(part)
 	upper := strings.ToUpper(trimmed)
 
@@ -311,7 +327,7 @@ func foldPart(part string, depth int) (string, bool) {
 	if idx := strings.IndexByte(upper, '('); idx > 0 {
 		fname := strings.TrimSpace(upper[:idx])
 		if isXLMFunctionName(fname) {
-			return foldFunctionCall(trimmed, depth), true
+			return foldFunctionCall(trimmed, depth, deadline), true
 		}
 	}
 
@@ -322,7 +338,7 @@ func foldPart(part string, depth int) (string, bool) {
 // depth bounds the mutual recursion with foldXLMFormulaDepth: at the cap we
 // keep the arguments verbatim instead of recursing, so dangerous-func markers
 // still fire on the wrapper but the stack can't overflow.
-func foldFunctionCall(call string, depth int) string {
+func foldFunctionCall(call string, depth int, deadline time.Time) string {
 	idx := strings.IndexByte(call, '(')
 	if idx < 0 {
 		return call
@@ -334,11 +350,12 @@ func foldFunctionCall(call string, depth int) string {
 		return call
 	}
 	args := rest[:closeIdx]
-	if depth >= maxXLMFoldDepth {
-		// Recursion cap reached: emit the wrapper with un-folded args.
+	if depth >= maxXLMFoldDepth || expired(deadline) {
+		// Recursion cap reached (or deadline hit): emit the wrapper with un-folded
+		// args so dangerous-func markers still fire but we stop descending.
 		return "=" + fname + "(" + args + ")"
 	}
-	folded := foldXLMFormulaDepth(args, depth+1)
+	folded := foldXLMFormulaDepth(args, depth+1, deadline)
 	if folded == "" {
 		folded = args
 	}
