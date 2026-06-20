@@ -239,9 +239,17 @@ func decodeRTFHex(b []byte) []byte {
 					continue
 				}
 			}
-			// Skip any other control word: advance past alphabetic chars + optional numeric param + delimiter
+			// Skip any other control word: advance past alphabetic chars + optional numeric param + delimiter.
+			// If the character after '\' is not alphabetic it is a control symbol (e.g. \*, \', \-)
+			// — advance past that single symbol byte so it doesn't stall or terminate the decoder.
+			prevI := i
 			for i < len(b) && b[i] >= 'a' && b[i] <= 'z' {
 				i++
+			}
+			if i == prevI {
+				// Control symbol (non-alpha): consume the single character and continue.
+				i++
+				continue
 			}
 			// Skip optional numeric parameter (including negative)
 			if i < len(b) && (b[i] == '-' || (b[i] >= '0' && b[i] <= '9')) {

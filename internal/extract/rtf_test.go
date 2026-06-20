@@ -213,6 +213,178 @@ func hexEncodeForRTF(b []byte) string {
 	return sb.String()
 }
 
+// --- Adversarial RTF obfuscation tests ---
+
+// Attackers embed spaces/tabs/newlines between every hex nibble (not just between
+// pairs) to break naive hex decoders that require contiguous pairs.
+func TestExtractRTFHexWhitespaceBetweenNibbles(t *testing.T) {
+	payload := []byte("MZ\x90\x00 rtf-whitespace-nibble obfuscated payload")
+	stream := buildOle10Native("w.exe", "C:\\w.exe", "C:\\Temp\\w.exe", payload, 0)
+	raw := hex.EncodeToString(stream)
+	// Insert a space after every nibble and a CRLF+TAB after every pair
+	var sb strings.Builder
+	for i := 0; i < len(raw); i++ {
+		sb.WriteByte(raw[i])
+		if i%2 == 1 {
+			sb.WriteString("\r\n\t")
+		} else {
+			sb.WriteByte(' ')
+		}
+	}
+	buf := []byte("{\\rtf1{\\object{\\*\\objdata " + sb.String() + "}}}")
+	res := Extract(buf, time.Time{})
+	if !res.IsRTF {
+		t.Fatal("RTF not flagged IsRTF")
+	}
+	if !res.IsOLEPackage {
+		t.Fatalf("whitespace-between-nibbles obfuscation defeated extraction; streams=%d", len(res.Streams))
+	}
+	if !streamsContain(res, "rtf-whitespace-nibble obfuscated payload") {
+		t.Errorf("carved payload not found; got %d streams", len(res.Streams))
+	}
+}
+
+// Mixed-case hex (D0CF11E0 vs d0cf11e0) must decode identically — uppercase
+// A-F are valid per the RTF spec.
+func TestExtractRTFMixedCaseHex(t *testing.T) {
+	payload := []byte("MZ\x90\x00 rtf-mixed-case hex payload")
+	stream := buildOle10Native("mc.exe", "C:\\mc.exe", "C:\\Temp\\mc.exe", payload, 0)
+	raw := hex.EncodeToString(stream)
+	// Alternate pairs: even-indexed pairs uppercase, odd-indexed pairs lowercase
+	mixedHex := make([]byte, len(raw))
+	for i := 0; i < len(raw); i++ {
+		if (i/2)%2 == 0 {
+			if raw[i] >= 'a' && raw[i] <= 'f' {
+				mixedHex[i] = raw[i] - 32 // to uppercase
+			} else {
+				mixedHex[i] = raw[i]
+			}
+		} else {
+			mixedHex[i] = raw[i]
+		}
+	}
+	buf := []byte("{\\rtf1{\\object{\\*\\objdata " + string(mixedHex) + "}}}")
+	res := Extract(buf, time.Time{})
+	if !res.IsRTF {
+		t.Fatal("RTF not flagged IsRTF")
+	}
+	if !res.IsOLEPackage {
+		t.Fatalf("mixed-case hex defeated extraction; streams=%d", len(res.Streams))
+	}
+	if !streamsContain(res, "rtf-mixed-case hex payload") {
+		t.Errorf("carved payload not found; got %d streams", len(res.Streams))
+	}
+}
+
+// Extra empty or keyword-carrying nested groups injected into the hex run must not
+// discard surrounding hex — depth tracking must resume decoding after each close.
+func TestExtractRTFFakeNestedGroups(t *testing.T) {
+	payload := []byte("MZ\x90\x00 rtf-fake-nested-group payload for extraction")
+	stream := buildOle10Native("fn.exe", "C:\\fn.exe", "C:\\Temp\\fn.exe", payload, 0)
+	raw := hex.EncodeToString(stream)
+	if len(raw) < 60 {
+		t.Skip("stream too short for split test")
+	}
+	// Split at multiple offsets and insert various inert groups between chunks
+	obfuscated := raw[:10] +
+		"{}" +
+		raw[10:30] +
+		"{\\blipuid deadbeef}" +
+		raw[30:60] +
+		"{\\nonshppict{}}" +
+		raw[60:]
+	buf := []byte("{\\rtf1{\\object{\\*\\objdata " + obfuscated + "}}}")
+	res := Extract(buf, time.Time{})
+	if !res.IsRTF {
+		t.Fatal("RTF not flagged IsRTF")
+	}
+	if !res.IsOLEPackage {
+		t.Fatalf("fake-nested-group obfuscation defeated extraction; streams=%d", len(res.Streams))
+	}
+	if !streamsContain(res, "rtf-fake-nested-group payload") {
+		t.Errorf("carved payload not found; got %d streams", len(res.Streams))
+	}
+}
+
+// \binN in the middle of the hex run: the decoder must skip exactly N binary bytes
+// then resume hex decoding at the correct position.
+func TestExtractRTFBinSkip(t *testing.T) {
+	payload := []byte("MZ\x90\x00 rtf-bin-skip payload across bin boundary")
+	stream := buildOle10Native("bs.exe", "C:\\bs.exe", "C:\\Temp\\bs.exe", payload, 0)
+	raw := hex.EncodeToString(stream)
+	mid := len(raw) / 2
+	// Insert \bin5 with 5 junk binary bytes in the middle of the hex stream.
+	// The binary bytes are literal (not hex), so the decoder must skip them by count.
+	junk := "\x00\x01\x02\x03\x04" // 5 binary bytes
+	obfuscated := raw[:mid] + "\\bin5 " + junk + raw[mid:]
+	buf := []byte("{\\rtf1{\\object{\\*\\objdata " + obfuscated + "}}}")
+	res := Extract(buf, time.Time{})
+	if !res.IsRTF {
+		t.Fatal("RTF not flagged IsRTF")
+	}
+	if !res.IsOLEPackage {
+		t.Fatalf("\\bin obfuscation defeated extraction; streams=%d", len(res.Streams))
+	}
+	if !streamsContain(res, "rtf-bin-skip payload") {
+		t.Errorf("carved payload not found; got %d streams", len(res.Streams))
+	}
+}
+
+// {\*\keyword ...} ignore-groups inside the hex run must be skipped in full
+// (nested-group depth tracking handles them). Importantly the \* control symbol
+// must not truncate hex decoding when encountered at depth 0 before the `{`.
+func TestExtractRTFStarIgnoreGroup(t *testing.T) {
+	payload := []byte("MZ\x90\x00 rtf-star-ignore-group payload extraction test")
+	stream := buildOle10Native("si.exe", "C:\\si.exe", "C:\\Temp\\si.exe", payload, 0)
+	raw := hex.EncodeToString(stream)
+	mid := len(raw) / 2
+	// Insert {\*\nonstandard ...} group in the middle — must be skipped entirely
+	obfuscated := raw[:mid] + "{\\*\\nonstandard this should be ignored}" + raw[mid:]
+	buf := []byte("{\\rtf1{\\object{\\*\\objdata " + obfuscated + "}}}")
+	res := Extract(buf, time.Time{})
+	if !res.IsRTF {
+		t.Fatal("RTF not flagged IsRTF")
+	}
+	if !res.IsOLEPackage {
+		t.Fatalf("{\\*\\keyword} ignore-group terminated hex decoding early; streams=%d", len(res.Streams))
+	}
+	if !streamsContain(res, "rtf-star-ignore-group payload") {
+		t.Errorf("carved payload not found; got %d streams", len(res.Streams))
+	}
+}
+
+// A bare \* control symbol at depth 0 (not wrapped in a group) must be consumed
+// without panicking or terminating hex decoding prematurely.
+func TestExtractRTFBareStarControlSymbol(t *testing.T) {
+	// Use OLE magic prefix so carveRTFObject exercises the CFB code path.
+	// The \* splits the hex run at depth 0 — decoder must skip it and keep going.
+	hexData := "d0cf11e0" + "\\* " + "a1b11ae1" + strings.Repeat("00", 24)
+	buf := []byte("{\\rtf1{\\object{\\*\\objdata " + hexData + "}}}")
+	res := Extract(buf, time.Time{})
+	if !res.IsRTF {
+		t.Fatal("RTF not flagged IsRTF")
+	}
+	// The OLE may be invalid (truncated) but must not panic — no crash is the assertion.
+	_ = res.Streams
+}
+
+// Deeply nested empty groups with no hex content at depth 0 must not panic and
+// must yield no OLE package (graceful fail on genuinely empty payload).
+func TestExtractRTFDeeplyNestedEmptyGroups(t *testing.T) {
+	inner := ""
+	for i := 0; i < 20; i++ {
+		inner = "{" + inner + "}"
+	}
+	buf := []byte("{\\rtf1{\\object{\\*\\objdata " + inner + "}}}")
+	res := Extract(buf, time.Time{})
+	if !res.IsRTF {
+		t.Fatal("RTF not flagged IsRTF")
+	}
+	if res.IsOLEPackage {
+		t.Error("empty nested groups incorrectly yielded IsOLEPackage")
+	}
+}
+
 // Multiple \objdata groups are each carved, bounded by maxRTFObjects.
 func TestExtractRTFMultipleObjects(t *testing.T) {
 	s1 := buildOle10Native("a.exe", "a.exe", "a.exe", []byte("MZ first rtf objdata payload"), 0)
