@@ -47,3 +47,31 @@ rule OLEID_Flash : maldoc heuristic suspicious
     condition:
         filesize < 16MB and $marker
 }
+
+/*
+  OLE2Link URL moniker -- CVE-2017-0199 / CVE-2017-8570.
+
+  yarad's extract.fromOLE2Link surfaces the URL carried by a Standard URL Moniker
+  inside an embedded OLE2Link object as "OLE2LINK-URL <url>". When Office opens
+  such a document it auto-resolves that moniker, fetching and executing a remote
+  HTA/script payload -- the CVE-2017-0199 family. The marker is only emitted when
+  the StdURLMoniker CLSID and a decodable URL are present, so this is an active
+  remote-payload lure, not a mere presence indicator: scored HIGH.
+
+  The literal prefix is emitted only by yarad, so matching it is zero-FP by
+  construction. An http(s)/file URL inside the marker raises the score further.
+*/
+rule OLE2Link_URL_Moniker : maldoc exploit malware
+{
+    meta:
+        author      = "yarad"
+        description = "Embedded OLE2Link URL moniker (CVE-2017-0199 remote payload auto-load)"
+        reference   = "https://www.cve.org/CVERecord?id=CVE-2017-0199"
+        score       = "80"
+    strings:
+        $marker = "OLE2LINK-URL " ascii
+        $u_http = "OLE2LINK-URL http" ascii nocase
+        $u_smb  = "OLE2LINK-URL \\\\" ascii
+    condition:
+        filesize < 16MB and $marker and any of ($u_http, $u_smb)
+}
