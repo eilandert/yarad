@@ -392,15 +392,28 @@ func TestFoldXLMFormulaDeepNestingTerminates(t *testing.T) {
 	}
 }
 
+// TestFoldXLMFormulaDeadlineBails verifies STAB-2: an already-expired deadline
+// short-circuits the fold (at entry) instead of processing the whole formula.
+func TestFoldXLMFormulaDeadlineBails(t *testing.T) {
+	past := time.Now().Add(-time.Second)
+	if got := foldXLMFormulaDepth("=CHAR(65)&CHAR(66)&CHAR(67)", 0, past); got != "" {
+		t.Errorf("expired deadline should bail with empty result, got %q", got)
+	}
+	// Zero deadline (the foldXLMFormula wrapper case) never expires.
+	if got := foldXLMFormulaDepth("=CHAR(65)&CHAR(66)", 0, time.Time{}); got != "AB" {
+		t.Errorf("zero deadline should fold normally, got %q", got)
+	}
+}
+
 // TestFoldFunctionCallDepthCap verifies the cap keeps args verbatim instead of
 // recursing once maxXLMFoldDepth is reached.
 func TestFoldFunctionCallDepthCap(t *testing.T) {
-	got := foldFunctionCall("EXEC(CHAR(65))", maxXLMFoldDepth)
+	got := foldFunctionCall("EXEC(CHAR(65))", maxXLMFoldDepth, time.Time{})
 	if got != "=EXEC(CHAR(65))" {
 		t.Errorf("at depth cap want verbatim args, got %q", got)
 	}
 	// Below the cap it folds CHAR(65) -> A.
-	got = foldFunctionCall("EXEC(CHAR(65))", 0)
+	got = foldFunctionCall("EXEC(CHAR(65))", 0, time.Time{})
 	if got != "=EXEC(A)" {
 		t.Errorf("below cap want folded args, got %q", got)
 	}
