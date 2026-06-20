@@ -677,7 +677,6 @@ func writeRaw(w http.ResponseWriter, code int, ctype string, body []byte) {
 	_, _ = w.Write(body) // #nosec G705 -- application/json or text/plain API response, not an HTML/XSS sink
 }
 
-
 // filenameHeader carries the attachment filename from the rspamd plugin. The
 // value is base64 (std, padding optional, whitespace tolerated): the name comes
 // from the email and is attacker-controlled, so encoding it stops an embedded
