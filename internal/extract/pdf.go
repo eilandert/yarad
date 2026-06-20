@@ -229,8 +229,9 @@ func canonicalizePDFNames(scan []byte) ([]byte, int) {
 				hi := hexVal(scan[i+1])
 				lo := hexVal(scan[i+2])
 				if hi >= 0 && lo >= 0 {
-					b := byte(hi<<4 | lo)
-					count++ // a hex escape was used — obfuscation signal regardless
+					b := byte(hi<<4 | lo) // #nosec G115 -- hexVal returns 0..15, so hi<<4|lo is 0..255
+					// A hex escape was used — obfuscation signal regardless of decode.
+					count++
 					// An escaped byte is a LITERAL name character (PDF 7.3.5), even
 					// when it decodes to a delimiter/whitespace. Emitting that raw
 					// byte would fabricate a name boundary (/foo#2FLaunch -> /Launch,
