@@ -20,6 +20,22 @@ func BenchmarkExtractClean(b *testing.B) {
 	}
 }
 
+// BenchmarkDecodeMultiLayerBomb benchmarks the multi-layer decode path against
+// a synthetic base64-bomb carrier (MSD-6 soak/bench half). The carrier is built
+// once outside the loop; b.SetBytes reports MB/s throughput so regressions are
+// visible without diving into b.N arithmetic.
+func BenchmarkDecodeMultiLayerBomb(b *testing.B) {
+	// ~512 KiB with 2 nesting layers — enough to exercise depth+dedup+budget
+	// paths without making the bench annoyingly slow.
+	buf := makeBase64Bomb(512*1024, 2)
+	b.SetBytes(int64(len(buf)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res := &Result{}
+		fromEncoded(buf, res, benchDeadline())
+	}
+}
+
 // BenchmarkExtractOLE2 benchmarks extraction of a minimal OLE2 container.
 // This exercises the CFB parse + stream iteration path without a real Office
 // document fixture. buildCFB is defined in msg_test.go (same package).
