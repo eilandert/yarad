@@ -336,3 +336,49 @@ func TestBIFF8FuncNames_DDE(t *testing.T) {
 		}
 	}
 }
+
+// TestBIFF8FuncNames_ExtFunc verifies the newly-added ext-function ftab ids
+// render as named functions (OPEN/QUIT/APP.ACTIVATE/SEND.KEYS) and that OPEN
+// and SEND.KEYS trigger the dangerous-func marker.
+func TestBIFF8FuncNames_ExtFunc(t *testing.T) {
+	// Each id must fold to the expected name.
+	for _, tc := range []struct {
+		id   uint16
+		name string
+	}{
+		{32769, "OPEN"},
+		{32778, "QUIT"},
+		{32893, "APP.ACTIVATE"},
+		{32899, "SEND.KEYS"},
+	} {
+		stream := append(ptgStr8("arg"), ptgFuncVarTok(1, tc.id)...)
+		got := parseBIFF8Formula(stream)
+		if !strings.Contains(got, tc.name) {
+			t.Errorf("ftab %d: %q not in folded output; got %q", tc.id, tc.name, got)
+		}
+	}
+
+	// OPEN and SEND.KEYS must emit XLM-DANGEROUS-FUNC markers.
+	for _, tc := range []struct {
+		id     uint16
+		marker string
+	}{
+		{32769, "XLM-DANGEROUS-FUNC OPEN"},
+		{32899, "XLM-DANGEROUS-FUNC SEND.KEYS"},
+	} {
+		stream := append(ptgStr8("x"), ptgFuncVarTok(1, tc.id)...)
+		formula := parseBIFF8Formula(stream)
+		var out [][]byte
+		emitDangerousMarkers(formula, &out)
+		found := false
+		for _, s := range out {
+			if string(s) == tc.marker {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("ftab %d: marker %q not emitted; formula=%q markers=%v", tc.id, tc.marker, formula, out)
+		}
+	}
+}

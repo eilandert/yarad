@@ -135,9 +135,13 @@ var biffFuncNames = map[uint16]string{
 	201:   "UNREGISTER",
 	267:   "REGISTER.ID",
 	336:   "CONCATENATE",
+	32769: "OPEN", // opens a workbook/file (ftab 32769); used in dropper chains
 	32774: "FILE.DELETE",
+	32778: "QUIT", // terminates Excel (anti-analysis / cleanup)
 	32785: "RUN",
 	32864: "FORMULA",
+	32893: "APP.ACTIVATE", // brings another application window to foreground (launcher assist)
+	32899: "SEND.KEYS",    // sends keystrokes to another app (launcher / shellcode trampoline)
 	33151: "WORKBOOK.HIDE",
 }
 

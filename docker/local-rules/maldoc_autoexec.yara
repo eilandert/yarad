@@ -38,12 +38,18 @@ rule Maldoc_AutoExec_Write_Execute : maldoc heuristic suspicious
         $auto8  = "Workbook_Open"        ascii wide nocase
         $auto9  = "Document_BeforeClose" ascii wide nocase
         $auto10 = "Workbook_Activate"    ascii wide nocase
+        // Template-injection / normal-template hijack entry points.
+        // AutoExit/AutoNew fire on document close/new-document-from-template;
+        // NewDocument fires on the Normal.dot template path (template injection).
+        $auto11 = "AutoExit"             ascii wide nocase
+        $auto12 = "AutoNew"              ascii wide nocase
+        $auto13 = "NewDocument"          ascii wide nocase
         // ActiveX control event handlers abused as autorun (Emotet/Trickbot
         // InkPicture1_Painted era). Suffix-matched and FP-prone on their own —
         // they only ever fire here gated by the write AND execute categories.
-        $auto11 = "_Painted"             ascii wide nocase
-        $auto12 = "_GotFocus"            ascii wide nocase
-        $auto13 = "_LostFocus"           ascii wide nocase
+        $auto14 = "_Painted"             ascii wide nocase
+        $auto15 = "_GotFocus"            ascii wide nocase
+        $auto16 = "_LostFocus"           ascii wide nocase
         // file-write / drop primitives
         $write1 = "SaveToFile"           ascii wide nocase
         $write2 = "ADODB.Stream"         ascii wide nocase
@@ -51,9 +57,14 @@ rule Maldoc_AutoExec_Write_Execute : maldoc heuristic suspicious
         $write4 = "CreateTextFile"       ascii wide nocase
         $write5 = "FileCopy"             ascii wide nocase
         $write6 = "CopyHere"             ascii wide nocase
-        $write7 = " For Output"          ascii wide nocase
-        $write8 = " For Binary"          ascii wide nocase
-        $write9 = " For Append"          ascii wide nocase
+        $write7  = " For Output"          ascii wide nocase
+        $write8  = " For Binary"          ascii wide nocase
+        $write9  = " For Append"          ascii wide nocase
+        // Anti-forensics / XLA persistence primitives.
+        // Kill deletes files (trace-removal); AltStartupPath redirects Excel's
+        // startup folder so a dropped XLA persists across reboots.
+        $write10 = "Kill "               ascii wide nocase
+        $write11 = "AltStartupPath"      ascii wide nocase
         // execution / launch / download primitives. Deliberately NOT bare
         // "CreateObject" — that just instantiates a COM object (incl. the write
         // objects like ADODB.Stream), so it would let a writer satisfy the

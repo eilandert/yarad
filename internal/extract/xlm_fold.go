@@ -58,6 +58,8 @@ var xlmDangerousFuncs = []string{
 	"FOPEN",
 	"FWRITE",
 	"HALT",
+	"OPEN",      // opens a workbook/file; used in dropper chains (ftab 32769)
+	"SEND.KEYS", // sends keystrokes to another app; shellcode trampoline (ftab 32899)
 }
 
 // fromOOXMLXLMFold reads xl/macrosheets/sheet*.xml from the already-opened
