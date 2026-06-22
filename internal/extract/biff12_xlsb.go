@@ -357,6 +357,30 @@ func parseBIFF12Formula(data []byte) string {
 			pos += 7
 			push("")
 
+		case ptgAdd, ptgSub, ptgMul, ptgDiv, ptgPower,
+			ptgLT, ptgLE, ptgEQ, ptgGE, ptgGT, ptgNE,
+			ptgIsect, ptgUnion, ptgRange:
+			// Binary operator (1 byte, no operand): pop 2, push "" neutral.
+			pos++
+			popStack(&stack)
+			popStack(&stack)
+			push("")
+
+		case ptgUplus, ptgUminus, ptgPercent:
+			// Unary operator (1 byte, no operand): pop 1, push it back unchanged.
+			pos++
+			v := popStack(&stack)
+			push(v)
+
+		case ptgParen:
+			// Grouping marker — no stack change, advance 1 byte.
+			pos++
+
+		case ptgMissArg:
+			// Missing optional argument — push "" so ptgFuncVar sees correct argc.
+			pos++
+			push("")
+
 		case ptgAttr:
 			return joinStack(stack)
 
