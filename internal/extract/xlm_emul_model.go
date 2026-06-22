@@ -11,7 +11,7 @@ package extract
 //	maxEmulSteps       PC advances
 //	visited[addr]      revisits per cell
 //	len(branchStack)   call-stack depth
-//	whileDepth         back-jump unroll count
+//	whileStack depth   back-jump unroll count (via len(whileStack) < maxEmulWhileUnroll)
 //	evaluating set     per-formula cycle break
 //
 // Plus inherited bounds: deadline (threaded), maxXLMFoldOutputLen (sink),
@@ -58,7 +58,6 @@ type xlmMachine struct {
 	sheets        map[string]*xlmSheet
 	names         map[string]string // defined names → value
 	branchStack   []branchFrame     // GOTO/CALL return stack (D4)
-	whileDepth    int               // bounded unroll counter (D5, legacy; superceded by whileStack)
 	forkQueue     []forkFrame       // D5: IF-branch COW fork frames to explore after main loop
 	whileStack    []string          // D5: active WHILE cell addresses ("sheet!coord"), one per nesting level
 	forCellCount  int               // D5: FOR.CELL iteration counter (capped at maxEmulWhileUnroll)

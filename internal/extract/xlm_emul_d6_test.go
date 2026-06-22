@@ -15,18 +15,6 @@ func d6Machine() (*xlmMachine, *[][]byte, *int) {
 	return m, &out, &total
 }
 
-func d6Cells(coords []string, formulas []string) []xlmCell {
-	cells := make([]xlmCell, len(coords))
-	for i := range coords {
-		f := ""
-		if i < len(formulas) {
-			f = formulas[i]
-		}
-		cells[i] = xlmCell{coord: coords[i], formula: f}
-	}
-	return cells
-}
-
 // ---------------------------------------------------------------------------
 // TestEmulateXLMCells_FallbackOnEmpty
 // Cells that the emulator cannot produce output from → interpreter fallback
