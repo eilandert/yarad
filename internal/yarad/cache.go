@@ -47,7 +47,7 @@ type lruCache struct {
 	ll        *list.List               // front = most recently used
 	items     map[string]*list.Element // key -> element
 	redis     *redisLayer              // optional shared L2 (nil when no YARAD_REDIS_URL)
-	evictions atomic.Uint64 // LRU evictions (capacity-driven, not TTL expiry)
+	evictions atomic.Uint64            // LRU evictions (capacity-driven, not TTL expiry)
 }
 
 type entry struct {
