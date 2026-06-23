@@ -177,6 +177,41 @@ func TestFromSpreadsheetML_EntityEncodedFormula(t *testing.T) {
 	}
 }
 
+func TestFromSpreadsheetML_SpacedFormulaAttr(t *testing.T) {
+	// CSV-DDE-FORMULA-WS: whitespace around the '=' must still match.
+	cases := []string{
+		`<Cell ss:Formula = "=cmd|'/c calc.exe'!A1"/>`,
+		`<Cell ss:Formula ='=cmd|/c calc.exe!A1'/>`,
+		`<Cell ss:Formula	=	"=cmd|'/c calc.exe'!A1"/>`,
+	}
+	for _, doc := range cases {
+		var res Result
+		fromSpreadsheetML([]byte(doc), &res, time.Time{})
+		var saw bool
+		for _, s := range res.Streams {
+			if strings.HasPrefix(string(s), "CSV-DDE ") && strings.Contains(string(s), "calc.exe") {
+				saw = true
+			}
+		}
+		if !saw {
+			t.Fatalf("spaced ss:Formula DDE not surfaced for %q; streams=%q", doc, res.Streams)
+		}
+	}
+}
+
+func TestFromSpreadsheetML_FormulaSubstringNoEquals(t *testing.T) {
+	// "Formula" appearing without a following '=' (e.g. attr name FormulaR1C1
+	// used as a value, or a stray token) must not crash or false-match.
+	doc := `<Cell ss:FormulaName="harmless"/><Note>Formula notes here</Note>`
+	var res Result
+	fromSpreadsheetML([]byte(doc), &res, time.Time{})
+	for _, s := range res.Streams {
+		if strings.HasPrefix(string(s), "CSV-DDE ") {
+			t.Fatalf("unexpected CSV-DDE marker from non-formula text; streams=%q", res.Streams)
+		}
+	}
+}
+
 func TestExtract_CSVDDEDispatch(t *testing.T) {
 	doc := "id,payload\n1,=cmd|'/c calc.exe'!A1\n"
 	res := Extract([]byte(doc), time.Time{})

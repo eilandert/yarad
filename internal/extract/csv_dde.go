@@ -224,9 +224,30 @@ func countCSVDDE(streams [][]byte) int {
 	return n
 }
 
+// skipToFormulaValue advances past the '=' and surrounding whitespace after
+// 'Formula' in an attribute, returning the slice at the opening quote. Returns
+// nil if no '=' is found or the next non-ws byte is not '='.
+func skipToFormulaValue(b []byte) []byte {
+	i := 0
+	// Skip leading whitespace
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\r' || b[i] == '\n') {
+		i++
+	}
+	// Check for '='
+	if i >= len(b) || b[i] != '=' {
+		return nil
+	}
+	i++
+	// Skip trailing whitespace
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\r' || b[i] == '\n') {
+		i++
+	}
+	return b[i:]
+}
+
 // ssFormulaAttr / ssDataOpen mark where SpreadsheetML carries cell formulas.
 var (
-	ssFormulaAttr = []byte("Formula=")
+	ssFormulaAttr = []byte("Formula")
 	ssDataOpen    = []byte("<Data")
 )
 
@@ -258,7 +279,11 @@ func fromSpreadsheetML(buf []byte, res *Result, deadline time.Time) {
 			break
 		}
 		rest = rest[i+len(ssFormulaAttr):]
-		emitIfCSVDDE(attrValue(rest), res)
+		v := skipToFormulaValue(rest)
+		if v == nil {
+			continue
+		}
+		emitIfCSVDDE(attrValue(v), res)
 	}
 
 	// 2) <Data ...>=...</Data> element text.
