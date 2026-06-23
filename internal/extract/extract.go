@@ -267,6 +267,12 @@ type Result struct {
 	// macro/extracted-stream metrics aren't inflated by decode output. >0 means
 	// the pass fired.
 	DecodedStreams int
+
+	// childOpts carries the request's effort Options down the nested-carrier walk
+	// (extractChild) so a nested PDF honors the same PDFDeepen / DecodeDepth /
+	// DecodeIterations caps as a top-level one. nil => FullOptions (top-level
+	// Extract / tests that build Result directly).
+	childOpts *Options
 }
 
 // Extract is the back-compat full-depth entry point: it runs every extractor at
@@ -295,6 +301,7 @@ func ExtractWithOptions(buf []byte, opts *Options) (res Result) {
 		opts = FullOptions(time.Time{})
 	}
 	deadline := opts.Deadline
+	res.childOpts = opts
 	// oleparse walks attacker-controlled binary offsets; a malformed document can
 	// drive it to panic. Recover and mark it so the caller still scans raw bytes.
 	defer func() {

@@ -177,6 +177,52 @@ func TestNestedOfficeChildDoesNotWipeSiblings(t *testing.T) {
 	}
 }
 
+// A PDF nested inside a ZIP must honor the request's PDFDeepen effort cap that
+// is threaded via res.childOpts (EFFORT-4-NESTED-PDF). The PDF contains a bare
+// /OpenAction /JS token pair in its body (not in a stream) so fromPDFIndicators
+// emits "PDF-OPENACTION-JS" — but ONLY when opts.PDFDeepen is true. The stream
+// content (zlib-deflated) is always inflated so IsPDF is always set.
+//
+// (a) PDFDeepen=true  → "PDF-OPENACTION-JS" marker present in res.Streams.
+// (b) PDFDeepen=false → marker absent; IsPDF still set (stream still inflated).
+func TestNestedZIPPDFChildHonorsEffortPDFDeepen(t *testing.T) {
+	// Minimal PDF: one zlib object stream (always inflated) + bare /OpenAction /JS
+	// tokens in the body (picked up by fromPDFIndicators only when PDFDeepen=true).
+	const pdfDeepMarker = "PDF-OPENACTION-JS"
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.7\n")
+	// Object stream with zlib payload — proves IsPDF regardless of PDFDeepen.
+	b.WriteString("1 0 obj\n<< /Length 1 >>\nstream\n")
+	b.Write(zlibDeflate([]byte("nested-pdf-stream-content")))
+	b.WriteString("\nendstream\nendobj\n")
+	// Bare name tokens in the body (NOT inside a stream/string) → fromPDFIndicators
+	// emits PDF-OPENACTION-JS when PDFDeepen is on.
+	b.WriteString("/OpenAction /JS \n%%EOF\n")
+	pdfBytes := b.Bytes()
+	zipBytes := buildZip(t, map[string][]byte{"dropper.pdf": pdfBytes})
+
+	// (a) PDFDeepen=true: indicator marker must appear.
+	optsDeep := FullOptions(time.Time{})
+	resDeep := ExtractWithOptions(zipBytes, optsDeep)
+	if !resDeep.IsPDF {
+		t.Error("(a) IsPDF not set with PDFDeepen=true")
+	}
+	if !streamsContain(resDeep, pdfDeepMarker) {
+		t.Errorf("(a) PDFDeepen=true: %q marker absent; streams=%d", pdfDeepMarker, len(resDeep.Streams))
+	}
+
+	// (b) PDFDeepen=false: indicator marker must be absent; IsPDF still set.
+	optsShallow := *FullOptions(time.Time{})
+	optsShallow.PDFDeepen = false
+	resShallow := ExtractWithOptions(zipBytes, &optsShallow)
+	if !resShallow.IsPDF {
+		t.Error("(b) IsPDF not set with PDFDeepen=false (stream inflation broken)")
+	}
+	if streamsContain(resShallow, pdfDeepMarker) {
+		t.Errorf("(b) PDFDeepen=false: %q marker present; effort cap not threaded through nested carrier", pdfDeepMarker)
+	}
+}
+
 // Deeply nested carriers must terminate at the depth cap, never recurse without
 // end. Nine gzip layers wrap a payload; the cap (maxNestDepth) is well below 9,
 // so the innermost payload is NOT reached — and the call must return (the test

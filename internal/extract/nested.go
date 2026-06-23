@@ -56,11 +56,20 @@ func extractChild(data []byte, res *Result, b *archiveBudget, depth int, deadlin
 		fromOLE(data, res, b, depth, deadline)
 	case isPDF(data):
 		// A PDF carried inside another container (archive/.msg/RTF object). The
-		// effort caps aren't threaded through the nested-carrier chain (sink-only
-		// EFFORT-4 scope); a nested PDF is rare and already deep in a carrier, so
-		// run it at full PDF-deepen depth — the more-detection default. The shared
-		// deadline still bounds it.
-		fromPDF(data, res, FullOptions(deadline))
+		// effort caps ARE now threaded via res.childOpts: a nested PDF honors the
+		// same PDFDeepen / DecodeDepth / DecodeIterations caps as a top-level one.
+		// Falls back to FullOptions when childOpts is unset (top-level Extract /
+		// tests that build Result directly). The current call's deadline overrides
+		// childOpts.Deadline so the live budget is always respected.
+		{
+			opts := FullOptions(deadline)
+			if res.childOpts != nil {
+				o := *res.childOpts
+				o.Deadline = deadline
+				opts = &o
+			}
+			fromPDF(data, res, opts)
+		}
 	case isRTF(data):
 		fromRTF(data, res, b, depth, deadline)
 	case isLNK(data):
