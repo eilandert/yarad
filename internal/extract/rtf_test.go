@@ -435,3 +435,28 @@ func TestCarveRTFObjectPanicRecovery(t *testing.T) {
 	// Must not panic.
 	carveRTFObject(hostile, res, bud, 0, time.Time{})
 }
+
+// TestDecodeRTFHexBinOverflow verifies a hostile \binN with an overlong count
+// does not panic. strconv.Atoi overflows to (MaxInt, ErrRange); before the fix
+// the ignored error let `j+n` wrap negative, slip past the `i > len(b)` clamp,
+// and panic on the next index. decodeRTFHex must treat an unparseable / oversized
+// N as "skip to end" and return cleanly.
+func TestDecodeRTFHexBinOverflow(t *testing.T) {
+	cases := [][]byte{
+		[]byte(`41\bin99999999999999999999 4242`), // overflow N (> MaxInt)
+		[]byte(`41\bin18446744073709551616 42`),   // > uint64 too
+		[]byte(`41\bin99999999 42`),               // N far past the buffer
+		[]byte(`41\bin0 4242`),                    // N=0, normal
+		[]byte(`41\bin5 ` + "ABCDE" + `4242`),     // N=5, skip exactly 5
+	}
+	for _, in := range cases {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("decodeRTFHex panicked on %q: %v", in, r)
+				}
+			}()
+			_ = decodeRTFHex(in) // must return without panic
+		}()
+	}
+}

@@ -220,6 +220,9 @@ func emitFoldedFormula(s string, out *[][]byte, totalOutput *int, checkDangerous
 func emitDangerousMarkers(folded string, out *[][]byte) {
 	upper := strings.ToUpper(folded)
 	for _, fn := range xlmDangerousFuncs {
+		if len(*out) >= maxStreams {
+			return
+		}
 		if strings.Contains(upper, "="+fn+"(") {
 			*out = append(*out, []byte("XLM-DANGEROUS-FUNC "+fn))
 		}

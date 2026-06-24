@@ -97,8 +97,8 @@ func detectRTFDDE(buf []byte, res *Result, deadline time.Time) {
 		}
 		instr := strings.TrimSpace(string(rest[start:i]))
 		upper := strings.ToUpper(instr)
-		if strings.HasPrefix(upper, "DDEAUTO ") || strings.HasPrefix(upper, "DDE ") ||
-			upper == "DDEAUTO" || upper == "DDE" {
+		if (strings.HasPrefix(upper, "DDEAUTO ") || strings.HasPrefix(upper, "DDE ") ||
+			upper == "DDEAUTO" || upper == "DDE") && len(res.Streams) < maxStreams {
 			res.Streams = append(res.Streams, []byte("RTF-DDE-FIELD "+instr))
 			count++
 		}
@@ -245,14 +245,21 @@ func decodeRTFHex(b []byte) []byte {
 					j++
 				}
 				if j > numStart {
-					n, _ := strconv.Atoi(string(b[numStart:j]))
+					// A hostile \binNNNN... with an overlong count overflows int:
+					// strconv.Atoi returns (MaxInt, ErrRange), and the ignored error
+					// let `j+n` wrap negative, which slipped past the `i > len(b)`
+					// clamp and panicked on the next b[i] (recovered, but it aborted
+					// the whole RTF extraction). Treat any parse failure, and any N
+					// past the buffer, as "skip to end".
+					n, err := strconv.Atoi(string(b[numStart:j]))
 					// Skip the delimiter (space) after the number if present
 					if j < len(b) && b[j] == ' ' {
 						j++
 					}
-					i = j + n
-					if i > len(b) {
+					if err != nil || n < 0 || n > len(b)-j {
 						i = len(b)
+					} else {
+						i = j + n
 					}
 					continue
 				}
