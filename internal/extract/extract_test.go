@@ -42,7 +42,8 @@ func TestOLEIDVBAPresentMarker(t *testing.T) {
 	}
 	const marker = "OLEID-VBA-PRESENT"
 	count := 0
-	for _, s := range res.Streams {
+	// PURE marker now lives in the out-of-band Markers channel (PLAN Phase 1).
+	for _, s := range res.Markers {
 		if string(s) == marker {
 			count++
 		}

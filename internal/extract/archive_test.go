@@ -112,8 +112,15 @@ func buildTarGz(t *testing.T, entries map[string][]byte) []byte {
 	return buildGzip(t, tb.Bytes())
 }
 
+// streamsContain searches the union of what the scanner scans: real content
+// (res.Streams) plus the out-of-band marker channel (res.Markers, PLAN Phase 1).
 func streamsContain(res Result, needle string) bool {
 	for _, s := range res.Streams {
+		if bytes.Contains(s, []byte(needle)) {
+			return true
+		}
+	}
+	for _, s := range res.Markers {
 		if bytes.Contains(s, []byte(needle)) {
 			return true
 		}

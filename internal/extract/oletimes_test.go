@@ -14,7 +14,13 @@ func timeToFiletime(t time.Time) uint64 {
 }
 
 func streamHasNeedle(res *Result, needle string) bool {
+	// Search content + marker channel (PLAN Phase 1) — the union the scanner sees.
 	for _, s := range res.Streams {
+		if bytes.Contains(s, []byte(needle)) {
+			return true
+		}
+	}
+	for _, s := range res.Markers {
 		if bytes.Contains(s, []byte(needle)) {
 			return true
 		}

@@ -152,9 +152,10 @@ func TestExtractRTFDDE_BareControlWord(t *testing.T) {
 func TestExtractRTFObjUpdate(t *testing.T) {
 	buf := []byte(`{\rtf1{\object\objupdate{\*\objdata d0cf11e0}}}`)
 	res := Extract(buf, time.Time{})
-	joined := bytes.Join(res.Streams, []byte("|"))
+	// RTF-OBJUPDATE is a PURE marker → out-of-band Markers channel (PLAN Phase 1).
+	joined := bytes.Join(res.Markers, []byte("|"))
 	if !bytes.Contains(joined, []byte("RTF-OBJUPDATE")) {
-		t.Fatalf("\\objupdate not detected; streams=%d joined=%q", len(res.Streams), joined)
+		t.Fatalf("\\objupdate not detected; markers=%d joined=%q", len(res.Markers), joined)
 	}
 }
 

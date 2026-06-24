@@ -913,18 +913,23 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 	// the raw bytes is also skipped (it can't add new matches).
 	seen := make(map[[32]byte]struct{})
 	seen[digest] = struct{}{} // body already hashed once by the caller (PERF-3)
-	for _, stream := range res.Streams {
+	// scanExtracted runs one extracted entry (real content stream OR an out-of-band
+	// marker) through dedup, the shared scan budget, and merge. Returns true when
+	// the budget is exhausted so the caller stops the whole sweep. Markers and
+	// Streams share one `seen` set and one budget — a marker byte-identical to a
+	// real stream is scanned once, and markers can't overrun the deadline.
+	scanExtracted := func(stream []byte) (stop bool) {
 		h := sha256.Sum256(stream)
 		if _, dup := seen[h]; dup {
 			s.exDeduped.Add(1)
-			continue
+			return false
 		}
 		seen[h] = struct{}{}
 		budget := s.scanTimeout
 		if !deadline.IsZero() {
 			if budget = time.Until(deadline); budget <= 0 {
-				s.logf("scan budget exhausted; %d macro streams left unscanned", len(res.Streams))
-				break
+				s.logf("scan budget exhausted; %d streams + %d markers left unscanned", len(res.Streams), len(res.Markers))
+				return true
 			}
 		}
 		// VBA=true so the macro-keyword rules (Didier vba.yara: `VBA and any of
@@ -933,8 +938,8 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 		// the container's decompressed macros as on its raw bytes.
 		m, serr := s.scanOne(rules, stream, scanVars{vba: true, filename: meta.Filename, extension: meta.Extension, fileType: meta.FileType}, budget)
 		if serr != nil {
-			s.logf("scan of extracted macro stream failed (raw verdict kept): %v", serr)
-			continue
+			s.logf("scan of extracted stream failed (raw verdict kept): %v", serr)
+			return false
 		}
 		before := len(out)
 		out = mergeMatches(out, m)
@@ -942,6 +947,22 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 		// stream but NOT on the raw bytes — count it as pre-extraction's payoff.
 		if added := len(out) - before; added > 0 {
 			s.exStreamMatches.Add(uint64(added))
+		}
+		return false
+	}
+	for _, stream := range res.Streams {
+		if scanExtracted(stream) {
+			break
+		}
+	}
+	// PLAN-marker-channel Phase 1: the out-of-band PURE markers are scanned against
+	// the SAME full ruleset as Streams, so Phase 1 changes nothing observable
+	// beyond the Streams/Markers split. (Phase 2 will reject marker-tagged hits on
+	// raw/content and accept them only here; Phase 3 will compile a markers.yac so
+	// marker rules execute ONLY on this channel.)
+	for _, marker := range res.Markers {
+		if scanExtracted(marker) {
+			break
 		}
 	}
 	// Drop denylisted rule names (public-ruleset demo/noise rules) before the

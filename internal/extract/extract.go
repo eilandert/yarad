@@ -206,6 +206,15 @@ type Result struct {
 	// Streams holds the decompressed VBA macro source, one cleartext blob per
 	// module. The caller scans each in addition to the raw bytes.
 	Streams [][]byte
+	// Markers holds yarad's synthetic PURE marker entries (no attacker-controlled
+	// data) split out of Streams at the end of extraction — the out-of-band
+	// "marker channel" (PLAN-marker-channel Phase 1). The scanner scans these
+	// against the full ruleset exactly like Streams, so Phase 1 changes nothing
+	// observable beyond the separation; the split is the prerequisite for the
+	// Phase 2 collision filter and Phase 3 compiled markers.yac partition.
+	// COMBINED markers (marker tag + a real attacker IOC in one string) stay in
+	// Streams. Populated by splitPureMarkers (see markers.go).
+	Markers [][]byte
 	// IsDoc is true when buf was a recognised OLE2/OOXML container (magic hit),
 	// whether or not any macro was found.
 	IsDoc bool
@@ -392,6 +401,17 @@ func ExtractWithOptions(buf []byte, opts *Options) (res Result) {
 	// and re-scanned. Snapshotted internally so decoded blobs are not re-decoded
 	// (depth cap 1). Best-effort; binary container bytes are skipped.
 	fromEncoded(buf, &res, opts)
+
+	// Split the synthetic PURE markers out of Streams into the out-of-band Markers
+	// channel (PLAN-marker-channel Phase 1). Done here at the single exit so every
+	// emitter is covered regardless of format path, and AFTER the in-extraction
+	// has*Marker / countXLMMarker helpers have run against Streams. decodeMoved
+	// keeps DecodedStreams exact: an MSD-DEEPDECODE marker counted into that total
+	// is no longer in Streams, so subtract it.
+	content, markers, decodeMoved := splitPureMarkers(res.Streams)
+	res.Streams = content
+	res.Markers = markers
+	res.DecodedStreams -= decodeMoved
 	return res
 }
 

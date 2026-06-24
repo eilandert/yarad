@@ -420,8 +420,10 @@ func TestFoldReplaceDoubledQuotes(t *testing.T) {
 // streamsAsStrings is a test helper that returns all streams as a string slice
 // for readable failure messages.
 func streamsAsStrings(res Result) []string {
-	out := make([]string, len(res.Streams))
-	for i, s := range res.Streams {
+	// Union of content + marker channel (PLAN Phase 1) — what the scanner sees.
+	all := append(append([][]byte{}, res.Streams...), res.Markers...)
+	out := make([]string, len(all))
+	for i, s := range all {
 		out[i] = strings.ToValidUTF8(string(s), "?")
 	}
 	return out

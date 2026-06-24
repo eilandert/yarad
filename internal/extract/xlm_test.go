@@ -311,9 +311,10 @@ func TestXLMBIFF_NameAutoOpen(t *testing.T) {
 	buf := buildBIFFNAMEWorkbook(t, 0x0020, 1, 0x01)
 	res := Extract(buf, time.Time{})
 
-	joined := bytes.Join(res.Streams, []byte("\n"))
+	// XLM-AUTO-OPEN is a PURE marker → out-of-band Markers channel (PLAN Phase 1).
+	joined := bytes.Join(res.Markers, []byte("\n"))
 	if !bytes.Contains(joined, []byte("XLM-AUTO-OPEN")) {
-		t.Fatalf("expected XLM-AUTO-OPEN; streams=%d joined=%q", len(res.Streams), joined)
+		t.Fatalf("expected XLM-AUTO-OPEN; markers=%d joined=%q", len(res.Markers), joined)
 	}
 }
 
@@ -322,9 +323,10 @@ func TestXLMBIFF_NameAutoClose(t *testing.T) {
 	buf := buildBIFFNAMEWorkbook(t, 0x0020, 1, 0x02)
 	res := Extract(buf, time.Time{})
 
-	joined := bytes.Join(res.Streams, []byte("\n"))
+	// XLM-AUTO-CLOSE is a PURE marker → out-of-band Markers channel (PLAN Phase 1).
+	joined := bytes.Join(res.Markers, []byte("\n"))
 	if !bytes.Contains(joined, []byte("XLM-AUTO-CLOSE")) {
-		t.Fatalf("expected XLM-AUTO-CLOSE; streams=%d joined=%q", len(res.Streams), joined)
+		t.Fatalf("expected XLM-AUTO-CLOSE; markers=%d joined=%q", len(res.Markers), joined)
 	}
 }
 
