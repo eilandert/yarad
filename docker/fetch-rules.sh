@@ -206,6 +206,37 @@ if [ "${YARAIFY:-1}" = "1" ]; then
     fi
 fi
 
+# PERF-12 slow-rule denylist (2026-06-25): a profiling run (libyara
+# --enable-profiling, the 14 live samples on one accumulating scanner) found
+# THREE public yaraify rules accounting for 99.3% of ALL scan cost — each an
+# unanchored short-atom regex on a PE/ELF binary rule whose slow string phase
+# runs on every TEXT buffer before its magic condition can reject it, and each
+# matching NOTHING on the mail corpus (PE/ELF go through the hash-lookup path,
+# not yara text rules). Dropping them is ~99% scan-cost cut at zero detection
+# loss for the mail vector. Pruned by RULE NAME (robust to upstream file
+# renames) — any fetched file DECLARING a denied rule is removed; a hit on a
+# multi-rule file is loud (would also drop its siblings) so it can't pass
+# silently. Re-profile after each yaraify refetch (it pulls latest daily): new
+# offenders → add here. Full data: memory/eilandert/rspamd-yarad/issues.md
+# "PERF-12" + perf12-rule-cost.tsv.
+SLOW_RULE_DENYLIST="Luckyware_Infection_Detection kryptina_encryptor DLL_DiceLoader_Fin7_Feb2024"
+for bad in $SLOW_RULE_DENYLIST; do
+    # files that DECLARE this rule (anchored `rule <name>` token, not a substring)
+    hits="$(grep -rlE "^[[:space:]]*(private[[:space:]]+|global[[:space:]]+)*rule[[:space:]]+${bad}([[:space:]{:]|\$)" "$OUT" 2>/dev/null || true)"
+    if [ -z "$hits" ]; then
+        echo "fetch-rules: PERF-12 denylist: '$bad' not present (upstream dropped/renamed it?)" >&2
+        continue
+    fi
+    for f in $hits; do
+        n="$(grep -cE "^[[:space:]]*(private[[:space:]]+|global[[:space:]]+)*rule[[:space:]]" "$f" 2>/dev/null || echo 0)"
+        if [ "$n" -gt 1 ]; then
+            echo "fetch-rules: WARNING PERF-12 denylist: '$bad' shares $(basename "$f") with $((n-1)) other rule(s); removing the WHOLE file" >&2
+        fi
+        rm -f "$f"
+        echo "fetch-rules: PERF-12 denylist: dropped slow rule '$bad' ($(basename "$f"))"
+    done
+done
+
 COUNT="$(find "$OUT" -name '*.yar' -o -name '*.yara' | wc -l)"
 echo "fetch-rules: $COUNT rule files in $OUT"
 [ "$COUNT" -gt 0 ] || fail "no rule files fetched"
