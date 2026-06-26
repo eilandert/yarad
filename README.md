@@ -535,6 +535,7 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 - [x] Local heuristics `Maldoc_Suspicious_VBA_Keywords` (olevba count heuristic) + `Maldoc_VBA_Shellcode_API` (Declare+injection-API)
 - [x] Position-independent shellcode `GetEIP` prologue (`Shellcode_GetEIP`): call/pop (`E8 00000000` + pop) and Didier-Stevens `fnstenv` stubs in a non-PE blob/attachment, gated `not uint16(0)==0x5A4D` (zero benign-PE FP)
 - [x] OOXML external-relationship scan (`*/_rels/*.rels`) → `OOXML_Remote_Template` rule (remote-template injection, T1221)
+- [x] VSTO/ClickOnce add-in manifest (`.vsto`) with a remote `http(s)` `codebase` → `VSTO_Remote_Codebase` rule (Office add-in side-load download-exec, T1137.006); gated on the VSTO namespace + `<assemblyIdentity` (zero benign-ClickOnce FP)
 - [x] Static single-layer decode pass (base64/hex/`StrReverse`) over raw + extracted streams, re-scanned (depth cap 1)
 - [x] Base64-PE carving: a decoded blob whose MZ header is pushed to a non-zero offset by a leading pad (the `pe` module anchors on MZ@0) is re-aligned and carved into an MZ@0 child for the pe rules, plus a `BASE64-PE-CARVE` marker (`Base64_Stuffed_PE` rule); validated through `e_lfanew` (zero-FP)
 - [x] VBA string folding: `Chr`/`Replace`/`Array Xor`/`StrReverse("lit")`/`Environ`→marker + **Dridex** (`DridexUrlDecode`); per-fold input clamp
