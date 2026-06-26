@@ -230,6 +230,28 @@ rule OLE_Doc_Security : maldoc heuristic suspicious marker
         filesize < 16MB and $marker
 }
 
+/*
+  Data appended past a CFB's FAT coverage (oletools "extra data after last
+  sector"). yarad's fromOLEExtraData emits an OLE2-EXTRA-DATA marker when a
+  non-zero blob (>= 512 bytes) is stapled after the last FAT-allocated sector —
+  a common way to attach a second-stage payload to a benign .doc/.xls without
+  touching its directory or FAT. Marker is yarad-only, so matching it is zero-FP
+  by construction; the carved tail is also scanned by content rules separately.
+  Reference: https://github.com/decalage2/oletools
+*/
+rule OLE2_ExtraData : maldoc heuristic suspicious marker
+{
+    meta:
+        author      = "yarad"
+        description = "Non-zero data appended past the last FAT-allocated sector of a CFB compound file (stapled payload)"
+        reference   = "https://github.com/decalage2/oletools"
+        score       = "20"
+    strings:
+        $marker = "OLE2-EXTRA-DATA" ascii fullword
+    condition:
+        filesize < 64MB and $marker
+}
+
 rule PPT_VBA_Macro : maldoc heuristic marker
 {
     meta:
