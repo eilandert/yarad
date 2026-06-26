@@ -86,6 +86,13 @@ var parityMarkers = map[string]markerKind{
 	"POLYGLOT-PE-ZIP":             contractMarker, // archive_indicators.yara Polyglot_PE_ZIP
 	"XLL-ADDIN":                   contractMarker, // archive_indicators.yara XLL_AddIn
 	"BASE64-PE-CARVE":             contractMarker, // archive_indicators.yara Base64_Stuffed_PE
+	"PE-SECTION-PACKED":           contractMarker, // pe_structural.yara PE_Section_Packed
+	"PE-SECTION-HIGH-ENTROPY":     contractMarker, // pe_structural.yara PE_Section_High_Entropy
+	"PE-OVERLAY":                  contractMarker, // pe_structural.yara PE_Overlay
+	"PE-VIRTUAL-SECTION":          contractMarker, // pe_structural.yara PE_Virtual_Section
+	"PE-DOTNET":                   contractMarker, // pe_structural.yara PE_DotNet
+	"PE-ANOMALY":                  contractMarker, // pe_structural.yara PE_Anomaly
+	"ELF-EXECUTABLE":              contractMarker, // pe_structural.yara ELF_Executable
 	"OLE-META-TEMPLATE-INJECTION": contractMarker, // ole_meta.yara OLE_Meta_Template_Injection
 	"OLE-META-APPNAME-EQUATION":   contractMarker, // ole_meta.yara OLE_Meta_AppName_Equation
 	"OLE-META-REVISION-ZERO":      contractMarker, // ole_meta.yara OLE_Meta_FreshDoc_Stomp
