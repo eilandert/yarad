@@ -44,8 +44,8 @@ func TestOLECLSIDCVERule_CLSIDAnchors(t *testing.T) {
 	// hex string in rule source (no spaces, lowercase).
 	for _, anchor := range []string{
 		"C3 2A B2 EA C1 30 CF 11 A7 EB 00 00 C0 5B AE 0B", // binary form in rule
-		"c32ab2eac130cf11a7eb0000c05bae0b",                 // hex-string form in rule
-		"CVE-2026-21509",                                   // reference in meta
+		"c32ab2eac130cf11a7eb0000c05bae0b",                // hex-string form in rule
+		"CVE-2026-21509",                                  // reference in meta
 	} {
 		if !bytes.Contains(data, []byte(anchor)) {
 			t.Errorf("ole_clsid_cve.yara missing anchor %q", anchor)
