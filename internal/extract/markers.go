@@ -15,32 +15,39 @@ import "bytes"
 // sites (encsig.go, oleid.go, userform.go, docprops.go, ppt.go, rtf.go,
 // xlm.go, defaultpw.go).
 var pureMarkerLiterals = map[string]struct{}{
-	"USERFORM-STRINGS":       {}, // userform.go
-	"DOCPROPS-STRINGS":       {}, // docprops.go
-	"OLEID-OBJECTPOOL":       {}, // oleid.go
-	"OLEID-FLASH":            {}, // oleid.go
-	"OLEID-VBA-PRESENT":      {}, // extract.go appendOLEIDMarker
-	"OLEID-EXTREL":           {}, // extract.go appendOLEIDMarker
-	"OLEID-DDE":              {}, // extract.go appendOLEIDMarker
-	"OLEID-XLM-PRESENT":      {}, // extract.go appendOLEIDMarker
-	"PPT-VBA-EXTRACTED":      {}, // ppt.go
-	"RTF-OBJUPDATE":          {}, // rtf.go
-	"DEFAULTPW-DECRYPTED":    {}, // defaultpw.go
-	"DIGITAL-SIGNATURE":      {}, // encsig.go
-	"ENCRYPTION-AES":         {}, // encsig.go
-	"ENCRYPTION-RC4":         {}, // encsig.go
-	"ENCRYPTION-XOR":         {}, // encsig.go
-	"XLM-AUTO-OPEN":          {}, // xlm.go
-	"XLM-AUTO-CLOSE":         {}, // xlm.go
-	"HTML-SMUGGLING-BLOB":    {}, // html.go
-	"HTML-SMUGGLING-DATAURI": {}, // html.go
-	"HTML-DATAURI-CONTAINER": {}, // html.go
-	"SVG-SCRIPT":             {}, // html.go
-	"SVG-EMBEDDED-PAYLOAD":   {}, // html.go
-	"ARCHIVE-ENCRYPTED":      {}, // archive.go
-	"POLYGLOT-PE-ZIP":        {}, // polyglot.go
-	"XLL-ADDIN":              {}, // xll.go
-	"BASE64-PE-CARVE":        {}, // pecarve.go
+	"USERFORM-STRINGS":        {}, // userform.go
+	"DOCPROPS-STRINGS":        {}, // docprops.go
+	"OLEID-OBJECTPOOL":        {}, // oleid.go
+	"OLEID-FLASH":             {}, // oleid.go
+	"OLEID-VBA-PRESENT":       {}, // extract.go appendOLEIDMarker
+	"OLEID-EXTREL":            {}, // extract.go appendOLEIDMarker
+	"OLEID-DDE":               {}, // extract.go appendOLEIDMarker
+	"OLEID-XLM-PRESENT":       {}, // extract.go appendOLEIDMarker
+	"PPT-VBA-EXTRACTED":       {}, // ppt.go
+	"RTF-OBJUPDATE":           {}, // rtf.go
+	"DEFAULTPW-DECRYPTED":     {}, // defaultpw.go
+	"DIGITAL-SIGNATURE":       {}, // encsig.go
+	"ENCRYPTION-AES":          {}, // encsig.go
+	"ENCRYPTION-RC4":          {}, // encsig.go
+	"ENCRYPTION-XOR":          {}, // encsig.go
+	"XLM-AUTO-OPEN":           {}, // xlm.go
+	"XLM-AUTO-CLOSE":          {}, // xlm.go
+	"HTML-SMUGGLING-BLOB":     {}, // html.go
+	"HTML-SMUGGLING-DATAURI":  {}, // html.go
+	"HTML-DATAURI-CONTAINER":  {}, // html.go
+	"SVG-SCRIPT":              {}, // html.go
+	"SVG-EMBEDDED-PAYLOAD":    {}, // html.go
+	"ARCHIVE-ENCRYPTED":       {}, // archive.go
+	"POLYGLOT-PE-ZIP":         {}, // polyglot.go
+	"XLL-ADDIN":               {}, // xll.go
+	"BASE64-PE-CARVE":         {}, // pecarve.go
+	"PE-SECTION-PACKED":       {}, // binanalyze.go
+	"PE-SECTION-HIGH-ENTROPY": {}, // binanalyze.go
+	"PE-OVERLAY":              {}, // binanalyze.go
+	"PE-VIRTUAL-SECTION":      {}, // binanalyze.go
+	"PE-DOTNET":               {}, // binanalyze.go
+	"PE-ANOMALY":              {}, // binanalyze.go
+	"ELF-EXECUTABLE":          {}, // binanalyze.go
 }
 
 // msdDeepDecodePrefix is the PURE marker emitted by the static-decode pass; the
