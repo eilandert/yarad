@@ -83,6 +83,27 @@ Strelka (target/strelka) was originally listed here. After surveying its 80 Pyth
 processors, the valuable ones are all portable to pure Go — see the roadmap section
 below.
 
+#### CAPE/CAPEv2 static extractors — partially applicable
+
+CAPE's dynamic analysis is out of scope (sandboxed execution, memory dumps). Its
+**static pre-execution** pipeline is partially portable:
+
+| Signal | Technique | Inline feasible |
+|--------|-----------|-----------------|
+| GuLoaderPrecursor (raw shellcode blob) | YARA: `not uint16(0)==0x5A4D` + call/pop byte pattern `{E8 00 00 00 00 (5?)}` against full buffer | Yes — YARA rule in local-rules |
+| FPU GetEIP (`D9 EE D9 74 24 F4 5?`) | YARA or `bytes.Index` across full buffer | Yes — YARA rule |
+| PE section entropy ≥ 7.0/7.2 | `saferwall/pe` with `SectionEntropy: true` | Yes — Go |
+| FormBook `.ndata` virtual section | `SizeOfRawData==0 && VirtualSize>0` from PE headers | Yes — Go |
+| AgentTesla/Formbook family ID | CAPE's `.yar` files from `data/yara/CAPE/` | Yes — add to fetch-rules.sh |
+| AgentTesla XOR config decrypt | `b ^ (byte(i) ^ 0xAA)` per-byte | Yes, but needs .NET CLR bytes — post-execution only in practice |
+| PE overlay (appended payload) | `pe.Overlay()` from saferwall/pe | Yes — Go |
+
+CAPE YARA files (`Guloader.yar`, `AgentTesla.yar`, `Formbook.yar`, `Obfuscar.yar`,
+`VBCrypter.yar`) are Apache-2.0 and fetchable from
+`github.com/kevoreilly/CAPEv2/data/yara/CAPE/`. `GuloaderPrecursor` is the most
+valuable rule for mail attachments — it targets the raw shellcode blob *before*
+self-extraction into PE form, which is exactly what arrives as an email attachment.
+
 ### Implementable inline — pure Go, no subprocess
 
 Research verdict: every item below is feasible in-process, zero CGo except where noted.
@@ -152,7 +173,7 @@ All pure Go, no CGo:
 | **LNK files** | `github.com/parsiya/golnk` | `CommandLineArgs` (LOLBin cmd), `WorkingDir`, `MachineID` (source host) | High |
 | **OneNote (.one)** | bespoke `encoding/binary` ~100 LOC | Embedded `FileDataStoreObject` carve → dropper payload extraction; CVE-2023-21716 vector | High |
 | **TNEF (winmail.dat)** | `github.com/Teamwork/tnef` | Attachment extraction from Outlook TNEF wrapper; still common in corporate mail | Medium |
-| **PE / ELF headers in non-PE containers** | `github.com/saferwall/pe` + stdlib `debug/elf` | MZ/ELF magic carved from PDF streams, RTF binary blobs, OLE package objects; sections entropy | Medium |
+| **PE / ELF headers in non-PE containers** | `github.com/saferwall/pe` (not stdlib — lacks entropy/overlay/anomaly) | MZ/ELF magic carved from PDF streams, RTF binary blobs, OLE package objects; section entropy ≥ 7.0/7.2; overlay (appended payload); FormBook `.ndata` (SizeOfRawData=0, VirtualSize>0); .NET CLR flag; imphash | Medium |
 | **VSTO manifests** | `encoding/xml` (stdlib) | `codebase` URL → remote payload pull location; cert hash | Medium |
 | **HTML script / data-URI extraction** | `golang.org/x/net/html` | Inline `<script>` content, `data:` URI payloads in divs — HTML smuggling detection | Medium |
 | **PDF metadata + embedded files** | `github.com/pdfcpu/pdfcpu` | Author, creator, embedded file extraction, link URLs, encryption flag | Medium |
