@@ -1,5 +1,8 @@
 /yarad
 /dist/
+/out/
+/debout/
+packaging/deb/dist/
 *.test
 *.out
 coverage.txt

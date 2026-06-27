@@ -1,0 +1,25 @@
+# nfpm config for the yarad-scan client .deb (lean, CGO-free Sieve/LDA client).
+#   stage the binary to dist/yarad-scan, then
+#   VERSION=1.1.0 ARCH=amd64 nfpm pkg -f nfpm-yarad-scan.yaml -p deb
+# See nfpm-yarad.yaml for why the src path is fixed, not ${ARCH}-templated.
+name: yarad-scan
+arch: ${ARCH}
+version: ${VERSION}
+version_schema: none
+section: mail
+priority: optional
+maintainer: eilandert <eilander@myguard.nl>
+description: |
+  yarad-scan — Sieve/LDA client for the yarad daemon
+  Lean CGO-free command-line client that POSTs a message to a yarad daemon's
+  /scan endpoint and exits with a verdict code. Drop-in for Sieve external
+  programs, Dovecot LDA pipes and shell integrations.
+homepage: https://github.com/eilandert/rspamd-yarad
+license: MIT
+depends:
+  - libc6
+contents:
+  - src: dist/yarad-scan
+    dst: /usr/bin/yarad-scan
+    file_info:
+      mode: 0755

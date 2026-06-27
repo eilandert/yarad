@@ -61,8 +61,57 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  release:
+  # Build .deb packages (yarad daemon + yarad-scan client, amd64 + arm64) from
+  # the just-built binaries with nfpm — no debian/ tree, pure-Go packager.
+  debs:
     needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5  # zizmor: ignore[artipacked]
+
+      - name: download arch binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: out/
+
+      - name: install nfpm
+        run: |
+          set -euo pipefail
+          NFPM_VERSION=2.43.0
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb" -o /tmp/nfpm.deb
+          sudo dpkg -i /tmp/nfpm.deb
+
+      - name: build .deb packages
+        run: |
+          set -euo pipefail
+          export VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p debout
+          cd packaging/deb
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            # nfpm doesn't template the contents src path — stage to a fixed name.
+            cp "../../out/yarad-linux-${arch}"      dist/yarad
+            cp "../../out/yarad-scan-linux-${arch}" dist/yarad-scan
+            export ARCH="$arch"
+            nfpm pkg -f nfpm-yarad.yaml      -p deb -t "../../debout/yarad_${VERSION}_${arch}.deb"
+            nfpm pkg -f nfpm-yarad-scan.yaml -p deb -t "../../debout/yarad-scan_${VERSION}_${arch}.deb"
+          done
+          ls -l ../../debout
+
+      - name: upload .deb packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs
+          path: debout/
+          retention-days: 1
+          if-no-files-found: error
+
+  release:
+    needs: [binaries, debs]
     runs-on: ubuntu-latest
     permissions:
       contents: write  # create GitHub release + upload assets
@@ -76,10 +125,16 @@ jobs:
           merge-multiple: true
           path: out/
 
+      - name: download .deb packages
+        uses: actions/download-artifact@v4
+        with:
+          name: debs
+          path: out/
+
       - name: checksums
         run: |
           set -euo pipefail
-          ( cd out && sha256sum yarad-linux-* yarad-scan-linux-* > SHA256SUMS )
+          ( cd out && sha256sum yarad-linux-* yarad-scan-linux-* ./*.deb > SHA256SUMS )
           ls -l out
 
       - name: create release
@@ -96,6 +151,7 @@ jobs:
               out/yarad-linux-arm64 \
               out/yarad-scan-linux-amd64 \
               out/yarad-scan-linux-arm64 \
+              out/*.deb \
               out/SHA256SUMS
           else
             gh release create "${GITHUB_REF_NAME}" \
@@ -105,5 +161,6 @@ jobs:
               out/yarad-linux-arm64 \
               out/yarad-scan-linux-amd64 \
               out/yarad-scan-linux-arm64 \
+              out/*.deb \
               out/SHA256SUMS
           fi
