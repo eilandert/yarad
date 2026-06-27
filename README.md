@@ -125,6 +125,37 @@ be scaled, restarted, or reload its rules on its own. Same shape as the
 - **Observable** — `/health`, `/ready`, `/version`, Prometheus `/metrics`
   (scans, matches, cache, per-extractor counters, rule staleness).
 
+## Install
+
+Three ways, pick one:
+
+**Debian/Ubuntu package** (`.deb`, amd64 + arm64) — attached to every
+[release](https://github.com/eilandert/rspamd-yarad/releases/latest):
+
+```sh
+# yarad — the daemon (systemd unit + /etc/yarad/yarad.env config)
+curl -fsSLO https://github.com/eilandert/rspamd-yarad/releases/latest/download/yarad_1.1.0_amd64.deb
+sudo apt install ./yarad_1.1.0_amd64.deb
+
+# fetch the rolling compiled rule bundle into the cache dir, then start it
+sudo -u yarad yarad fetch-rules -cache-dir /var/cache/yarad   # or drop your own .yar in /var/lib/yarad/rules
+sudoedit /etc/yarad/yarad.env                                 # set YARAD_TOKEN, feeds, …
+sudo systemctl enable --now yarad
+
+# yarad-scan — the lean CGO-free Sieve/LDA client (no daemon)
+curl -fsSLO https://github.com/eilandert/rspamd-yarad/releases/latest/download/yarad-scan_1.1.0_amd64.deb
+sudo apt install ./yarad-scan_1.1.0_amd64.deb
+```
+
+The daemon package installs a hardened systemd unit (unprivileged `yarad` user,
+`ProtectSystem=strict`, `NoNewPrivileges`) and a documented
+`/etc/yarad/yarad.env`. State (rules) lives in `/var/lib/yarad`.
+
+**Static binaries** — `yarad-linux-{amd64,arm64}` and
+`yarad-scan-linux-{amd64,arm64}` plus `SHA256SUMS` are on the same release page.
+
+**Docker** — see [Quick start](#quick-start) below (rules baked in).
+
 ## Quick start
 
 The image already bakes ~10k rules, so a token is all you need:

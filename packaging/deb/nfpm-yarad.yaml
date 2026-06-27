@@ -1,0 +1,43 @@
+# nfpm config for the yarad daemon .deb. Built per-arch (run from packaging/deb):
+#   stage the binary to dist/yarad, then
+#   VERSION=1.1.0 ARCH=amd64 nfpm pkg -f nfpm-yarad.yaml -p deb
+# nfpm templates arch:/version: from env but NOT the contents src path, so the
+# binary is staged to the fixed dist/ path by the caller (see release.yml).
+name: yarad
+arch: ${ARCH}
+version: ${VERSION}
+version_schema: none
+section: mail
+priority: optional
+maintainer: eilandert <eilander@myguard.nl>
+description: |
+  YARA mail-malware scanning daemon
+  yarad is a Go daemon that extracts malware carriers from mail attachments
+  (OLE/OOXML macros, XLM, RTF/DDE, PDF, OneNote, archives, encrypted Office)
+  and scans them with a local YARA rule set plus live abuse.ch IOC feeds.
+  Replaces the olefy->olevba bridge and the SpamAssassin OLEVBMacro plugin with
+  a single cached daemon, integrating with rspamd, SpamAssassin and ICAP.
+homepage: https://github.com/eilandert/rspamd-yarad
+license: MIT
+depends:
+  - libc6
+  - libssl3
+  - zlib1g
+  - libzstd1
+contents:
+  - src: dist/yarad
+    dst: /usr/bin/yarad
+    file_info:
+      mode: 0755
+  - src: yarad.service
+    dst: /lib/systemd/system/yarad.service
+  - src: yarad.sysusers
+    dst: /usr/lib/sysusers.d/yarad.conf
+  - src: yarad.env
+    dst: /etc/yarad/yarad.env
+    type: config|noreplace
+    file_info:
+      mode: 0640
+scripts:
+  postinstall: postinstall.sh
+  preremove: preremove.sh

@@ -1,0 +1,38 @@
+[Unit]
+Description=yarad — YARA mail-malware scanning daemon
+Documentation=https://github.com/eilandert/rspamd-yarad
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yarad
+Group=yarad
+EnvironmentFile=-/etc/yarad/yarad.env
+ExecStart=/usr/bin/yarad serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# yarad needs to reach abuse.ch / GitHub for live feeds + rule fetch, read its
+# rules dir, and listen on a TCP port. Everything else is locked down.
+StateDirectory=yarad
+CacheDirectory=yarad
+RuntimeDirectory=yarad
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/yarad /var/cache/yarad
+
+[Install]
+WantedBy=multi-user.target
