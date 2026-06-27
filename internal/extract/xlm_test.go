@@ -518,6 +518,59 @@ func TestXLMBIFF_SingleStreamRegression(t *testing.T) {
 	}
 }
 
+// TestXLMDupWorkbookFirstWins verifies that when a crafted zip carries two
+// xl/workbook.xml entries, fromOOXMLXLM uses the FIRST one — matching the old
+// `wbFile == nil` linear-scan guard — not the second (last-wins). This is the
+// parity invariant for the shared keep-first idx introduced in PERF-31.
+func TestXLMDupWorkbookFirstWins(t *testing.T) {
+	// First xl/workbook.xml: declares a veryHidden macrosheet → should trigger marker.
+	firstWorkbook := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+		`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+		`<sheets>` +
+		`<sheet name="RealMacro" sheetId="1" state="veryHidden" r:id="rId1"` +
+		` xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>` +
+		`</sheets>` +
+		`</workbook>`
+	// Second xl/workbook.xml (decoy): no hidden sheet → should NOT trigger marker.
+	decoyWorkbook := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+		`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+		`<sheets>` +
+		`<sheet name="CleanSheet" sheetId="1" r:id="rId1"` +
+		` xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>` +
+		`</sheets>` +
+		`</workbook>`
+
+	var b bytes.Buffer
+	zw := zip.NewWriter(&b)
+	addZipEntry(t, zw, "xl/workbook.xml", firstWorkbook) // index 0 — must win
+	addZipEntry(t, zw, "xl/macrosheets/sheet1.xml", `<?xml version="1.0"?><macrosheet/>`)
+	addZipEntry(t, zw, "xl/workbook.xml", decoyWorkbook) // index 2 — must lose
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	res := Extract(b.Bytes(), time.Time{})
+
+	found := false
+	for _, s := range res.Streams {
+		if bytes.HasPrefix(s, []byte("XLM-HIDDEN-MACROSHEET veryHidden RealMacro")) {
+			found = true
+		}
+		if bytes.HasPrefix(s, []byte("XLM-HIDDEN-MACROSHEET")) && bytes.Contains(s, []byte("CleanSheet")) {
+			t.Errorf("decoy (second) workbook was used instead of first: %q", s)
+		}
+	}
+	if !found {
+		t.Errorf("expected XLM-HIDDEN-MACROSHEET veryHidden RealMacro from FIRST workbook; streams: %v", func() []string {
+			ss := make([]string, len(res.Streams))
+			for i, s := range res.Streams {
+				ss[i] = string(s)
+			}
+			return ss
+		}())
+	}
+}
+
 // TestXLMDeadline checks that an already-expired deadline causes fromBIFFXLM
 // and fromOOXMLXLM to return immediately with nothing emitted.
 func TestXLMDeadline(t *testing.T) {

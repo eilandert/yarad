@@ -24,7 +24,6 @@ import (
 	"encoding/xml"
 	"io"
 	"strconv"
-	"strings"
 	"time"
 
 	"www.velocidex.com/golang/oleparse"
@@ -74,26 +73,20 @@ var xlmHiddenStateLabel = [4]string{
 // zip contains an xl/macrosheets/ part (confirming Excel-4.0 macro content).
 // Fail-open: any read/parse error silently returns with no streams added.
 // Bounded by maxBytesWorkbookXML + maxXLMMarkers; respects expired(deadline).
-func fromOOXMLXLM(zr *zip.Reader, out *[][]byte, deadline time.Time) {
+//
+// idx is the shared name→entry map built by fromOOXML; hasMacrosheet is
+// precomputed by the same map-building pass (avoids re-scanning zr.File).
+func fromOOXMLXLM(idx map[string]*zip.File, hasMacrosheet bool, out *[][]byte, deadline time.Time) {
 	if expired(deadline) {
 		return
 	}
 
-	// Check whether any xl/macrosheets/ part exists — required to avoid FPs on
-	// ordinary hidden sheets in workbooks that have no macro content at all.
-	var wbFile *zip.File
-	hasMacrosheet := false
-	for _, f := range zr.File {
-		if f.Name == "xl/workbook.xml" && wbFile == nil {
-			wbFile = f
-		}
-		if strings.HasPrefix(f.Name, "xl/macrosheets/") {
-			hasMacrosheet = true
-		}
-	}
+	// hasMacrosheet and the xl/workbook.xml lookup are provided by the caller
+	// (fromOOXML) which already walked zr.File to build idx — no re-scan needed.
 	if !hasMacrosheet {
 		return
 	}
+	wbFile := idx["xl/workbook.xml"]
 	if wbFile == nil {
 		return
 	}
