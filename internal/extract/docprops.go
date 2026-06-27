@@ -82,6 +82,7 @@ func fromOOXMLDocProps(zr *zip.Reader, out *[][]byte, deadline time.Time) {
 	}
 
 	// Build a name-to-entry index for O(1) lookup.
+	// last-wins on duplicate names: identical to main behaviour.
 	idx := make(map[string]*zip.File, len(zr.File))
 	for _, f := range zr.File {
 		idx[f.Name] = f

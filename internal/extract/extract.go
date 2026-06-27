@@ -362,8 +362,8 @@ func ExtractWithOptions(buf []byte, opts *Options) (res Result) {
 		// a plain archive whose members may be droppers (unpack them). The macro
 		// path also flags Failed on an unopenable (corrupt) zip; never member-dump
 		// an Office doc.
-		fromOOXML(buf, &res, deadline, opts)
-		if !isOfficeZip(buf) {
+		officeZip := fromOOXML(buf, &res, deadline, opts)
+		if !officeZip {
 			fromArchive(buf, &res, b, 0, deadline)
 		} else {
 			// Office-classified: the macro path owns the body parts, but a dropper can
@@ -839,11 +839,57 @@ func fromMSG(ole *oleparse.OLEFile, res *Result, bud *archiveBudget, depth int, 
 // but without touching disk. A zip we can't open at all is a parse failure; a
 // single unparseable .bin is skipped without losing the rest.
 // opts carries per-request caps (nil degrades to package defaults).
-func fromOOXML(buf []byte, res *Result, deadline time.Time, opts *Options) {
+// fromOOXML extracts OOXML content from buf and returns whether the zip is
+// classified as an Office document (same predicate as isOfficeZip, computed
+// from the already-open zr to avoid a second zip.NewReader call at the
+// dispatch site).
+func fromOOXML(buf []byte, res *Result, deadline time.Time, opts *Options) (officeZip bool) {
 	zr, err := zip.NewReader(bytes.NewReader(buf), int64(len(buf)))
 	if err != nil {
 		res.Failed = true
-		return
+		return false
+	}
+
+	// Compute the office-zip classification from the already-open zr using the
+	// same predicate and maxZipEntries bound as isOfficeZip — eliminating the
+	// second zip.NewReader call that isOfficeZip(buf) would otherwise perform.
+	// First-match short-circuit mirrors isOfficeZip exactly.
+	for i, f := range zr.File {
+		if i >= maxZipEntries {
+			break
+		}
+		switch f.Name {
+		case "[Content_Types].xml", "mimetype":
+			officeZip = true
+		}
+		if !officeZip && isOfficePartName(f.Name) {
+			officeZip = true
+		}
+		if officeZip {
+			break
+		}
+	}
+
+	// Build a shared name→entry index for fromOOXMLXLM's O(1) workbook lookup.
+	// IMPORTANT: keep-FIRST semantics (`if _, ok := idx[f.Name]; !ok`) so that
+	// a crafted zip with duplicate entry names selects the SAME entry as the
+	// old fromOOXMLXLM linear scan did (`wbFile == nil` guard → first wins).
+	// Last-wins here would be a detection-critical divergence on dup xl/workbook.xml.
+	// fromOOXMLDocProps builds its OWN last-wins idx internally (unchanged from
+	// main) and is NOT passed this map, so its dup-name behaviour is unaffected.
+	// Helpers that walk entries linearly with per-entry predicates and caps
+	// (rels, DDE, XLMFold, XLSBXLMFold, XLSBExternalDDE) continue to iterate
+	// zr.File directly so their ordering, bounds, and cap interactions are
+	// unchanged.
+	idx := make(map[string]*zip.File, len(zr.File))
+	hasMacrosheet := false
+	for _, f := range zr.File {
+		if _, ok := idx[f.Name]; !ok {
+			idx[f.Name] = f // keep-first: matches old wbFile==nil linear scan
+		}
+		if !hasMacrosheet && strings.HasPrefix(f.Name, "xl/macrosheets/") {
+			hasMacrosheet = true
+		}
 	}
 	// Seed from the existing streams (not an empty slice): on a NESTED child (an
 	// Office zip carried in a .msg/Ole10Native/RTF object/archive member via
@@ -918,7 +964,7 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time, opts *Options) {
 	// a synthetic "XLM-HIDDEN-MACROSHEET <state> <name>" stream.
 	// Fail-open: any parse error is silently ignored.
 	lenBeforeXLM := len(out)
-	fromOOXMLXLM(zr, &out, deadline)
+	fromOOXMLXLM(idx, hasMacrosheet, &out, deadline)
 	// Capture the hidden-macrosheet result HERE, right after fromOOXMLXLM, before
 	// XLMFold/docProps append. The fold contribution is tracked separately by
 	// res.HasXLMFold below; measuring len(out) > lenBeforeXLM at the END would also
@@ -965,6 +1011,7 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time, opts *Options) {
 	if attempted > 0 && len(out) == parentStreams && failedBins == attempted {
 		res.Failed = true
 	}
+	return officeZip
 }
 
 // appendOLEIDMarker appends a []byte stream containing marker to out if cond is
