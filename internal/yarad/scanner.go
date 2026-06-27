@@ -1515,7 +1515,7 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 		// from the first occurrence, so CheckCandidates output for the dup is 100%
 		// deduped away. Removing the dup call removes ZERO appends to out and is
 		// therefore byte-identical to the output produced today. Uses the same
-		// streamDedupKey (MD5 via crypto/md5 truncated to 16 B) as the YARA loop.
+		// streamDedupKey (xxhash 128-bit) as the YARA-scan dedup loop above.
 		// buf is processed first (unchanged); unique streams follow in first-
 		// occurrence order (mirrors the original walk, minus the wasteful dups).
 		// Seeding with streamDedupKey(buf) here rather than meta.RawKey because
