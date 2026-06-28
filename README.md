@@ -4,6 +4,12 @@
 
 # strixd — YARA malware scanning for rspamd
 
+**Mailstrix is the owl that finds malware hiding in your mail.** It takes hostile
+attachments apart — unwrapping OLE2/OOXML, VBA, RTF objects, PDFs, archives and
+nested carriers — until YARA detection rules can finally see the dangerous bits.
+It runs out-of-process behind Rspamd (async HTTP), SpamAssassin, an ICAP server,
+Dovecot Sieve, or standalone.
+
 [![CI](https://github.com/eilandert/mailstrix/actions/workflows/ci.yml/badge.svg)](https://github.com/eilandert/mailstrix/actions/workflows/ci.yml)
 [![Release](https://github.com/eilandert/mailstrix/actions/workflows/release.yml/badge.svg)](https://github.com/eilandert/mailstrix/actions/workflows/release.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/eilandert/mailstrix.svg)](https://pkg.go.dev/github.com/eilandert/mailstrix)
