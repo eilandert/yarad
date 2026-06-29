@@ -1,7 +1,7 @@
 # strix-scan.sieve — quarantine a message when strixd's YARA rules match it.
 #
 # Project:  https://github.com/eilandert/mailstrix
-# Write-up: https://deb.myguard.nl/2026/06/yara-malware-scanning-mailstrix/
+# Write-up: https://deb.myguard.nl/articles/yara-malware-scanning-mailstrix/
 #
 # This runs at delivery (Dovecot LDA / LMTP) and pipes the message to the
 # `strix-scan-wrapper` program (a thin shell wrapper around the CGO-free

@@ -128,3 +128,28 @@ func TestExtractDefaultBudget(t *testing.T) {
 		t.Error("zero maxURLs should default to 64, not drop all candidates")
 	}
 }
+
+func TestCandidateNormalizationFields(t *testing.T) {
+	cands := urlcand.Extract([]byte("see HTTP://1.2.3.4:80/path?q=1#frag"), 64)
+	if len(cands) != 1 {
+		t.Fatalf("candidates = %+v, want one", cands)
+	}
+	norm, host, ip := cands[0].Normalize()
+	if norm != cands[0].Norm || host != cands[0].Host || ip != cands[0].IP {
+		t.Fatalf("Normalize did not cache fields on candidate: %+v", cands[0])
+	}
+	if cands[0].Norm != "http://1.2.3.4/path?q=1" {
+		t.Errorf("Norm = %q", cands[0].Norm)
+	}
+	if cands[0].Host != "1.2.3.4" {
+		t.Errorf("Host = %q", cands[0].Host)
+	}
+	if cands[0].IP != "1.2.3.4" {
+		t.Errorf("IP = %q", cands[0].IP)
+	}
+
+	norm, host, ip = urlcand.NormalizeHTTPURL(` https://Example.COM:443/a/. `)
+	if norm != "https://example.com/a/" || host != "example.com" || ip != "" {
+		t.Errorf("NormalizeHTTPURL = (%q,%q,%q)", norm, host, ip)
+	}
+}

@@ -20,7 +20,6 @@ import (
 	"encoding/csv"
 	"io"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -261,6 +260,9 @@ func (c *Checker) Check(data []byte, maxURLs int) []Hit {
 // cands is produced by urlcand.Extract; maxURLs caps how many are processed.
 func (c *Checker) CheckCandidates(cands []urlcand.Candidate, maxURLs int) []Hit {
 	c.lookups.Add(1)
+	if len(cands) == 0 {
+		return nil
+	}
 	rs := c.rs.Load()
 	if rs == nil || len(rs.ips) == 0 {
 		return nil
@@ -270,19 +272,23 @@ func (c *Checker) CheckCandidates(cands []urlcand.Candidate, maxURLs int) []Hit 
 	}
 
 	var out []Hit
-	seen := make(map[string]struct{})
+	var seen map[string]struct{}
 	budget := maxURLs
-	for _, cand := range cands {
+	for i := range cands {
 		if budget <= 0 {
 			break
 		}
 		budget--
-		norm, ip := extractIP(cand.Raw)
+		cand := &cands[i]
+		norm, _, ip := cand.Normalize()
 		if ip == "" {
 			continue
 		}
 		if _, dup := seen[norm]; dup {
 			continue
+		}
+		if seen == nil {
+			seen = make(map[string]struct{})
 		}
 		seen[norm] = struct{}{}
 		if _, ok := rs.ips[ip]; ok {
@@ -293,37 +299,6 @@ func (c *Checker) CheckCandidates(cands []urlcand.Candidate, maxURLs int) []Hit 
 		c.hits.Add(1)
 	}
 	return out
-}
-
-// extractIP returns the (normalized URL, bare IP) if the URL's host is a raw
-// IPv4 address, otherwise ("", "").
-func extractIP(raw string) (norm, ip string) {
-	raw = strings.TrimRight(strings.TrimSpace(raw), ".,);]}'\"")
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return "", ""
-	}
-	h := u.Hostname()
-	if !isIP(h) {
-		return "", ""
-	}
-	hostPort := h
-	if p := u.Port(); p != "" && !defaultPort(u.Scheme, p) {
-		hostPort = h + ":" + p
-	}
-	path := u.EscapedPath()
-	if path == "/" {
-		path = ""
-	}
-	norm = u.Scheme + "://" + hostPort + path
-	if u.RawQuery != "" {
-		norm += "?" + u.RawQuery
-	}
-	return norm, h
-}
-
-func defaultPort(scheme, port string) bool {
-	return (scheme == "http" && port == "80") || (scheme == "https" && port == "443")
 }
 
 // Metrics returns a snapshot for /metrics.

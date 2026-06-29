@@ -7,7 +7,8 @@ set -eu
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 miss="$(mktemp)"
-trap 'rm -f "$miss"' EXIT
+stale="$(mktemp)"
+trap 'rm -f "$miss" "$stale"' EXIT
 
 for md in "$root"/contrib/*/README.md; do
     [ -f "$md" ] || continue
@@ -28,4 +29,12 @@ if [ -s "$miss" ]; then
     exit 1
 fi
 echo "ok   - all contrib/ README relative links resolve"
+
+if git -C "$root" grep -nE 'href="/20[0-9]{2}/[0-9]{2}/|deb\.myguard\.nl/20[0-9]{2}/[0-9]{2}/' -- \
+    README.md contrib docker packaging .github internal cmd third_party > "$stale"; then
+    echo "FAIL - stale deb.myguard.nl dated permalink:"
+    sed 's/^/  /' "$stale"
+    exit 1
+fi
+echo "ok   - no stale deb.myguard.nl dated permalinks"
 echo "ALL OK"

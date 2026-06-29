@@ -12,40 +12,39 @@ package urlcand
 
 import (
 	"bytes"
+	"net/url"
 	"regexp"
 	"strings"
 )
 
-var urlRe = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>)\]}\x00-\x1f]+`)
+var (
+	urlRe        = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>)\]}\x00-\x1f]+`)
+	schemeSep    = []byte("://")
+	defangTokens = [][]byte{
+		[]byte("hxxp"),
+		[]byte("hXXp"),
+		[]byte("[.]"),
+		[]byte("(.)"),
+		[]byte("{.}"),
+		[]byte("[dot]"),
+		[]byte("(dot)"),
+		[]byte("{dot}"),
+		[]byte("[DOT]"),
+		[]byte(" dot "),
+		[]byte("[:]"),
+		[]byte("[://]"),
+	}
+)
 
 // Candidate is one URL string extracted from a buffer.
 type Candidate struct {
 	Raw   string // the raw URL string as found in the buffer
 	Deobf bool   // true when found only in the defanged copy
-}
+	Norm  string // canonical http(s) URL form for feed lookup, "" when invalid
+	Host  string // lowercase hostname from Norm, "" when invalid
+	IP    string // Host when it is a dotted-decimal IPv4 address, else ""
 
-// hasCandidateURL is the PERF-29 cheap pre-gate run BEFORE the regexp and the
-// defang materialisation. It returns true whenever the buffer could plausibly
-// contain a URL candidate, and false ONLY for buffers that demonstrably cannot.
-//
-// Soundness (strict superset):
-//
-//   - Raw regexp match: urlRe requires `https?://` (case-insensitive). Every
-//     such match contains the literal substring "://" (all-ASCII, no locale
-//     fold needed in the byte comparison). bytes.Contains for "://" is
-//     case-insensitive for this purpose because "://" has no alphabetic bytes.
-//
-//   - Defanged match: defang() only transforms — and can only produce a URL —
-//     when bytes.ContainsAny(data, "[({xX") is true (that gate is already in
-//     defang itself). Any defanged form that could become http(s):// after
-//     replacement must contain at least one of those bytes (e.g. hxxp→has 'x',
-//     hXXp→has 'X', [.]→has '[', (.)→has '(', {.}→has '{').
-//
-// Therefore: a buffer that fails BOTH checks cannot produce any candidate from
-// either the raw pass or the defanged pass. The pre-gate is a strict superset
-// of "has any URL candidate" and can never produce a false negative.
-func hasCandidateURL(data []byte) bool {
-	return bytes.Contains(data, []byte("://")) || bytes.ContainsAny(data, "[({xX")
+	normalized bool
 }
 
 // Extract extracts URL candidates from data. If maxURLs <= 0 it defaults to 64.
@@ -62,16 +61,17 @@ func Extract(data []byte, maxURLs int) []Candidate {
 		maxURLs = 64
 	}
 	// PERF-29: cheap pre-gate before the regexp and defang string materialisation.
-	// On a clean buffer (no "://" and no defang trigger bytes) neither the raw
+	// On a clean buffer (no "://" and no defang token) neither the raw
 	// regexp nor the defang path can produce any candidate — return early without
 	// allocating anything.
-	if !hasCandidateURL(data) {
+	defangPossible := hasDefangToken(data)
+	if !bytes.Contains(data, schemeSep) && !defangPossible {
 		return nil
 	}
 	budget := maxURLs
 
 	matches := urlRe.FindAll(data, budget)
-	if len(matches) == 0 && !bytes.ContainsAny(data, "[({xX") {
+	if len(matches) == 0 && !defangPossible {
 		return nil
 	}
 
@@ -81,17 +81,17 @@ func Extract(data []byte, maxURLs int) []Candidate {
 			break
 		}
 		budget--
-		out = append(out, Candidate{Raw: string(m), Deobf: false})
+		out = append(out, NewCandidate(string(m), false))
 	}
 
-	if budget > 0 {
+	if budget > 0 && defangPossible {
 		if defanged := defang(data); defanged != "" {
 			for _, m := range urlRe.FindAll([]byte(defanged), budget) {
 				if budget <= 0 {
 					break
 				}
 				budget--
-				out = append(out, Candidate{Raw: string(m), Deobf: true})
+				out = append(out, NewCandidate(string(m), true))
 			}
 		}
 	}
@@ -102,13 +102,92 @@ func Extract(data []byte, maxURLs int) []Candidate {
 	return out
 }
 
+// NewCandidate builds a candidate. Normalized lookup fields are filled lazily on
+// first feed use so clean extraction avoids URL parsing until it is needed.
+func NewCandidate(raw string, deobf bool) Candidate {
+	return Candidate{Raw: raw, Deobf: deobf}
+}
+
+// Normalize lazily fills and returns the shared normalized lookup fields.
+func (c *Candidate) Normalize() (norm, host, ip string) {
+	if !c.normalized {
+		c.Norm, c.Host, c.IP = NormalizeHTTPURL(c.Raw)
+		c.normalized = true
+	}
+	return c.Norm, c.Host, c.IP
+}
+
+// NormalizeHTTPURL returns a canonical http(s) URL for feed set comparison,
+// the bare lowercase hostname, and the raw IPv4 hostname when present. It
+// lowercases scheme/host, strips default ports and fragments, removes a bare
+// trailing "/", and trims common trailing punctuation from regex captures.
+func NormalizeHTTPURL(raw string) (norm, host, ip string) {
+	raw = strings.TrimRight(strings.TrimSpace(raw), ".,);]}'\"")
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "", ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if (scheme != "http" && scheme != "https") || u.Host == "" {
+		return "", "", ""
+	}
+	h := strings.ToLower(u.Hostname())
+	if h == "" {
+		return "", "", ""
+	}
+	hostPort := h
+	if p := u.Port(); p != "" && !defaultPort(scheme, p) {
+		hostPort = h + ":" + p
+	}
+	path := u.EscapedPath()
+	if path == "/" {
+		path = ""
+	}
+	norm = scheme + "://" + hostPort + path
+	if u.RawQuery != "" {
+		norm += "?" + u.RawQuery
+	}
+	if isIPv4(h) {
+		ip = h
+	}
+	return norm, h, ip
+}
+
+func defaultPort(scheme, port string) bool {
+	return (scheme == "http" && port == "80") || (scheme == "https" && port == "443")
+}
+
+func isIPv4(s string) bool {
+	if s == "" {
+		return false
+	}
+	dots := 0
+	for _, c := range s {
+		if c == '.' {
+			dots++
+		} else if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return dots == 3
+}
+
+func hasDefangToken(data []byte) bool {
+	for _, tok := range defangTokens {
+		if bytes.Contains(data, tok) {
+			return true
+		}
+	}
+	return false
+}
+
 // defang rewrites common URL obfuscations malware uses in document code back
 // to a scannable form. Returns "" when nothing changed (so the caller skips a
 // redundant second pass). Cheap and bounded: plain string replacement only.
 func defang(data []byte) string {
 	// Check on the raw bytes BEFORE materialising a string: for the common
 	// no-defang case this avoids a full-buffer copy on the hot path.
-	if !bytes.ContainsAny(data, "[({xX") {
+	if !hasDefangToken(data) {
 		return ""
 	}
 	s := string(data)

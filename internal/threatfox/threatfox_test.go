@@ -91,6 +91,18 @@ func TestCheckBudget(t *testing.T) {
 	}
 }
 
+func TestCheckCandidatesEmptyNoAlloc(t *testing.T) {
+	c := testChecker(t)
+	allocs := testing.AllocsPerRun(100, func() {
+		if hits := c.CheckCandidates(nil, 64); hits != nil {
+			t.Fatalf("empty candidates hit: %+v", hits)
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("empty CheckCandidates allocs = %g, want 0", allocs)
+	}
+}
+
 func TestNewDisabledNoKey(t *testing.T) {
 	if New("", 0, "", func(string, ...any) {}) != nil {
 		t.Error("empty key must disable the checker (nil)")

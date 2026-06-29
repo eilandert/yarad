@@ -177,7 +177,8 @@ func TestPrefilterDifferential(t *testing.T) {
 // 2. Soundness: for every input that produces candidates, the prefilter passes
 // ---------------------------------------------------------------------------
 
-// TestPrefilterSoundness verifies that the prefilter (hasCandidateURL) never
+// TestPrefilterSoundness verifies that the Extract pre-gate (the inlined
+// `bytes.Contains(data, schemeSep) || hasDefangToken(data)` check) never
 // produces a false negative: for every input from which Extract returns at
 // least one candidate, the prefilter must have allowed it through.
 //
@@ -255,12 +256,12 @@ func TestPrefilterCleanAllocsLessThanURLPath(t *testing.T) {
 // heap allocations in Extract. The prefilter uses bytes.Contains and
 // bytes.ContainsAny — both allocation-free — and returns nil on mismatch.
 func TestPrefilterCleanAllocsZero(t *testing.T) {
-	cleanBuf := []byte(strings.Repeat("plain prose no links here at all. ", 30))
+	cleanBuf := []byte(strings.Repeat("plain prose with example text xlsx exe but no links here at all. ", 30))
 
 	allocs := testing.AllocsPerRun(50, func() {
 		urlcand.Extract(cleanBuf, 64)
 	})
 	if allocs > 0 {
-		t.Errorf("clean prose buffer: expected 0 allocs, got %g", allocs)
+		t.Errorf("clean x-heavy prose buffer: expected 0 allocs, got %g", allocs)
 	}
 }

@@ -1,7 +1,6 @@
 package urlhaus
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,6 +118,18 @@ func TestCheckBudget(t *testing.T) {
 	}
 }
 
+func TestCheckCandidatesEmptyNoAlloc(t *testing.T) {
+	c := testChecker(t)
+	allocs := testing.AllocsPerRun(100, func() {
+		if hits := c.CheckCandidates(nil, 64); hits != nil {
+			t.Fatalf("empty candidates hit: %+v", hits)
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("empty CheckCandidates allocs = %g, want 0", allocs)
+	}
+}
+
 func TestNormalizeURL(t *testing.T) {
 	cases := map[string]string{
 		"http://Evil.Example/":        "http://evil.example",
@@ -141,39 +152,24 @@ func TestNewDisabledNoKey(t *testing.T) {
 }
 
 // BenchmarkCheckNoDefang measures Check() on a buffer that does NOT trigger
-// defanging. defang()'s gate is bytes.ContainsAny(data, "[({xX") — the buffer
-// must contain none of those bytes anywhere, including in embedded URLs.
+// defanging. The defang gate now scans for exact obfuscation tokens, so ordinary
+// prose and URLs may contain x/X without forcing the defanged string copy.
 // b.ReportAllocs() shows the alloc drop from avoiding the full-buffer
 // []byte→string copy that the old check(string(data),...) call paid.
 func BenchmarkCheckNoDefang(b *testing.B) {
 	c := testCheckerB(b)
-	// ~256 KB buffer. Noise + embedded URLs are crafted to contain none of the
-	// defang gate bytes ("[({xX") so bytes.ContainsAny returns false and
-	// defang() skips its internal string(data) copy entirely — isolating the
-	// FindAll zero-copy win.
-	//
-	// Note: "evil.example/malware.exe" contains 'x' (exe), so we use alternate
-	// hostnames and paths that are ASCII-clean w.r.t. the trigger set.
+	// ~256 KB buffer. Noise intentionally contains x-heavy normal words: that is
+	// the real-mail case the stricter defang-token gate should keep cheap.
 	const (
 		bodySize = 256 * 1024
-		// Alphabet: no 'x', no 'X', no '[', '(', '{'
-		noise = "abcdefghijklmnopqrstuvwyz0123456789 "
+		noise    = "example text xlsx exe maximum next extra clean prose "
 	)
 	buf := make([]byte, bodySize)
 	for i := range buf {
 		buf[i] = noise[i%len(noise)]
 	}
-	// URLs chosen to contain no trigger chars: no 'x'/'X'/'['/'('/'{'
-	// "http://evil.host/malware.bin"  — 'b','i','n' safe; no 'x'
-	// "https://safe.host/not-bad"     — clean
-	// The feed has "evil.example/malware.exe" but a different path on
-	// evil.example still triggers the host-level hit.
-	copy(buf[512:], []byte("http://evil.host/malware.bin"))
-	copy(buf[bodySize-200:], []byte("https://safe.host/not-bad"))
-	// Guard: ensure the full buffer (noise + URLs) has no defang trigger bytes.
-	if bytes.ContainsAny(buf, "[({xX") {
-		b.Fatal("bench buffer contains defang trigger bytes — fix URLs or noise")
-	}
+	copy(buf[512:], []byte("http://neutral.example/file.exe"))
+	copy(buf[bodySize-200:], []byte("https://safe.example/not-bad"))
 	// Confirm urlcand.Extract produces no deobf candidates (defang gate skips).
 	for _, c := range urlcand.Extract(buf, 64) {
 		if c.Deobf {
