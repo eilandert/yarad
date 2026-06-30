@@ -307,6 +307,7 @@ cat message | strix-scan -url http://strixd.internal:8079
   that carry no family meta still count as malicious but contribute no family. One
   family per file = the highest-confidence family-bearing hit. Useful for labelling
   a malware-store sample's family without burning external lookup quota.
+  `-json` and `-label` are mutually exclusive (passing both is a usage error).
 
 This is the **delivery-time** path from the opinion in the intro: let rspamd drop
 the obvious spam at SMTP, then scan the smaller, cleaner stream with YARA at

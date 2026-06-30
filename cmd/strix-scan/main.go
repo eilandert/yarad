@@ -82,6 +82,10 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "strix-scan: -url (or MAILSTRIX_URL) is required")
 		return 2
 	}
+	if *jsonOut && *labelOut {
+		fmt.Fprintln(os.Stderr, "strix-scan: -json and -label are mutually exclusive")
+		return 2
+	}
 	if *maxBody <= 0 {
 		*maxBody = 8 << 20
 	}

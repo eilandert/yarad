@@ -395,6 +395,16 @@ func TestJSONDropsCanary(t *testing.T) {
 	}
 }
 
+// -json and -label together is a usage error (exit 2), not a silent precedence.
+func TestJSONLabelMutuallyExclusive(t *testing.T) {
+	srv := jsonYarad(t, `{"matches":[]}`)
+	defer srv.Close()
+	f := writeTemp(t, "benign")
+	if code := run([]string{"-url", srv.URL, "-json", "-label", f}); code != 2 {
+		t.Fatalf("exit = %d, want 2 (conflicting -json/-label)", code)
+	}
+}
+
 func TestRequiresURL(t *testing.T) {
 	t.Setenv("MAILSTRIX_URL", "")
 	if code := run([]string{writeTemp(t, "x")}); code != 2 {
