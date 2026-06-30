@@ -146,7 +146,7 @@ Three ways, pick one:
 
 ```sh
 # Resolve the latest version + your arch (release assets are version-pinned,
-# e.g. strixd_1.1.1_amd64.deb — the bare latest/download/ path is not).
+# e.g. strixd_1.1.0_amd64.deb — the bare latest/download/ path is not).
 VER=$(curl -fsSL https://api.github.com/repos/eilandert/mailstrix/releases/latest \
         | grep -oP '"tag_name":\s*"v\K[^"]+')
 ARCH=$(dpkg --print-architecture)   # amd64 or arm64
@@ -675,7 +675,7 @@ The [`contrib/rspamd/`](contrib/rspamd/) directory has everything the rspamd sid
   | `STRIX_MALWARE` | malware family / webshell / RAT / APT / ransomware | `8.0` |
   | `STRIX_EXPLOIT` | exploit / CVE / maldoc exploit | `7.0` |
   | `STRIX_PHISHING` | phishing kit / document | `5.0` |
-  | `YARA` | uncategorized match (default) | `4.0` |
+  | `STRIX` | uncategorized match (default) | `4.0` |
   | `STRIX_SUSPICIOUS` | heuristic / anomaly (FP-prone) | `2.0` |
   | `URLHAUS_MALWARE_URL` | known malware URL (options = the URLs) | `8.0` |
   | `MALWAREBAZAAR_MALWARE` | attachment SHA256 = known sample (option = digest) | `10.0` |
@@ -741,7 +741,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 - [x] Filename/extension externals (name-keyed rules) via `X-MAILSTRIX-Filename`
 - [x] URL defang + URLhaus URL/host lookup; MalwareBazaar attachment-hash lookup (cached feeds, fail-open)
 - [x] `MAILSTRIX_RULE_DENYLIST` (drop) + `MAILSTRIX_RULE_ALLOWLIST` (log-only)
-- [x] Tiered scoring (`STRIX_MALWARE`/`_EXPLOIT`/`_PHISHING`/`YARA`/`_SUSPICIOUS` + `URLHAUS_MALWARE_URL`)
+- [x] Tiered scoring (`STRIX_MALWARE`/`_EXPLOIT`/`_PHISHING`/`STRIX`/`_SUSPICIOUS` + `URLHAUS_MALWARE_URL`)
 - [x] SIGHUP rule reload (atomic swap, keeps old rules on a bad edit); `fetch-rules` out-of-image updates
 - [x] `strix-scan` lean CGO-free Sieve/LDA client ([`contrib/sieve/`](contrib/sieve/))
 - [x] UserForm hidden-string extraction (carves payload strings from VBA UserForm `o`/`f`/`\x03VBFrame` OLE2 streams; `Maldoc_UserForm_Payload` rule)
