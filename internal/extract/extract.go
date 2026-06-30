@@ -290,6 +290,13 @@ type Result struct {
 	// archive (any layer). yarad holds no password so it cannot unpack the member;
 	// the ARCHIVE-ENCRYPTED marker is emitted instead — a hidden-payload mail tell.
 	EncryptedArchive bool
+	// DecryptedArchive is true when a password-protected member was successfully
+	// decrypted using a candidate password (ArchivePWEnabled path). The decrypted
+	// plaintext is surfaced as a normal member stream and the ARCHIVE-DECRYPTED
+	// marker is emitted. Independent of EncryptedArchive: an input may carry both
+	// (one member decrypted, another not), and a decrypted member is no longer the
+	// hidden-payload tell that ARCHIVE-ENCRYPTED is.
+	DecryptedArchive bool
 	// Polyglot is true when buf is simultaneously a valid PE image and a valid ZIP
 	// (file-type confusion): the email gateway parses the ZIP while the endpoint
 	// runs the PE. The POLYGLOT-PE-ZIP marker is emitted; extraction is not

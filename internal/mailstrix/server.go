@@ -753,6 +753,7 @@ func (s *Server) serveMetrics(w http.ResponseWriter) {
 	fm("extract_msg_total", "OLE2 buffers recognised as Outlook .msg (nested attachments extracted)", ex.MSG)
 	fm("extract_onenote_total", "buffers recognised as OneNote .one sections (embedded files carved)", ex.OneNote)
 	fm("extract_archive_total", "buffers recognised as an archive (zip/gz/7z/rar/tar; members unpacked)", ex.Archive)
+	fm("extract_archive_decrypted_total", "archives with >=1 password-protected member decrypted via a candidate password", ex.ArchiveDecrypted)
 	fm("extract_ole_package_total", "OLE2 docs with an embedded OLE Package object (Ole10Native carved)", ex.OLEPackage)
 	fm("extract_lnk_total", "Windows shell links (.lnk) with StringData (command-line args/paths) surfaced", ex.LNK)
 	fm("extract_pdf_total", "PDFs with FlateDecode object streams inflated for scanning", ex.PDF)

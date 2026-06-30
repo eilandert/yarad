@@ -65,6 +65,15 @@ const (
 type archiveBudget struct {
 	members int // members unpacked so far (all layers)
 	total   int // cumulative decompressed bytes emitted (all layers)
+	// decryptAttempts counts ALL password-decrypt attempts (candidate × encrypted
+	// member) across every layer of one input, checked against maxDecryptAttempts.
+	// kdfAttempts counts ONLY the expensive KDF-format attempts (WinZip-AES, 7z,
+	// rar), checked against the much lower maxKDFDecryptAttempts. They are separate
+	// so cheap ZipCrypto attempts can't exhaust the KDF sub-cap (and vice versa).
+	// The brute-force loop over attacker-influenced candidates is the feature's
+	// primary DoS surface — see archivepw.go.
+	decryptAttempts int
+	kdfAttempts     int
 }
 
 func (b *archiveBudget) spent() bool {
@@ -297,6 +306,12 @@ func unpackZip(buf []byte, res *Result, b *archiveBudget, depth int, deadline ti
 		return
 	}
 	res.IsArchive = true
+	// pwc is non-nil only when MAILSTRIX_ARCHIVE_PW is enabled and candidates were
+	// sourced. zdec is a lazily-built yeka/zip reader over the same buffer, used to
+	// decrypt encrypted members (std archive/zip cannot decrypt). zfound caches the
+	// build so a second encrypted member reuses it (or skips after a build failure).
+	pwc := pwCandidates(res)
+	var zdec *zipDecryptReader
 	for i, f := range zr.File {
 		if i >= maxZipEntries || b.spent() || len(res.Streams) >= maxStreams || expired(deadline) {
 			break
@@ -305,9 +320,29 @@ func unpackZip(buf []byte, res *Result, b *archiveBudget, depth int, deadline ti
 			continue
 		}
 		// General-purpose bit 0 set => the member is encrypted (traditional zip
-		// or AE-x AES). yarad has no password, so flag it and skip the member.
+		// or AE-x AES). With no candidates (feature off) we cannot decrypt, so flag
+		// it and skip. With candidates, try a bounded decrypt and, on success, emit
+		// the plaintext as a normal member; on failure keep the encrypted signal.
 		if f.Flags&0x1 != 0 {
-			markEncryptedArchive(res)
+			if len(pwc) == 0 {
+				markEncryptedArchive(res)
+				continue
+			}
+			if zdec == nil {
+				zdec = newZipDecryptReader(buf)
+			}
+			// AES (KDF-bound) vs ZipCrypto (cheap) is read straight off the std-zip
+			// member's validated AE-x extra — no extra yeka parse, so a post-cap
+			// member pays nothing.
+			plain := zdec.decryptMember(i, hasAESExtra(f.Extra), f.UncompressedSize64, pwc, b, deadline)
+			if plain == nil {
+				markEncryptedArchive(res)
+				continue
+			}
+			// Emit the payload BEFORE the marker so a maxStreams cap hit can never
+			// drop the decrypted dropper in favour of the marker.
+			emitMember(plain, res, b, depth, deadline)
+			markDecryptedArchive(res)
 			continue
 		}
 		if f.UncompressedSize64 > maxBytesPerMember {
@@ -380,22 +415,66 @@ func looksLikeTar(data []byte) bool {
 }
 
 // unpack7z walks a 7-Zip archive and emits each file member. sevenzip is pure-Go.
-// Encrypted entries (no password) error on Open and are skipped.
+//
+// 7z gives NO reliable "this is encrypted" signal: a content-encrypted member
+// Opens cleanly and only fails on Read (the decrypt garbage trips lzma), and a
+// header-encrypted archive fails NewReader with a generic parse error — neither
+// mentions "password". So encryption is detected EMPIRICALLY: when a member can't
+// be read (or the whole reader won't open) and password candidates are available,
+// attempt a bounded crack; a candidate that opens+reads the archive proves it was
+// encrypted. One 7z password unlocks the whole archive, so the crack is done once.
 func unpack7z(buf []byte, res *Result, b *archiveBudget, depth int, deadline time.Time) {
+	pwc := pwCandidates(res)
 	zr, err := sevenzip.NewReader(bytes.NewReader(buf), int64(len(buf)))
 	if err != nil {
-		// A header-encrypted 7z (whole-archive AES over the file LIST) fails to
-		// open at all — the per-member isEncryptedErr path below is unreachable,
-		// so classify the reader error here and emit ARCHIVE-ENCRYPTED before
-		// bailing rather than silently dropping the signal.
+		// The reader won't open. This is either a header-encrypted 7z (the file
+		// list itself is AES-wrapped) or plain corruption. With candidates, try to
+		// crack — success means it was header-encrypted; otherwise classify via the
+		// (best-effort) error text so a clearly-encrypted error still marks.
+		res.IsArchive = true
+		if len(pwc) > 0 {
+			// Header-encrypted: no specific trigger member (the whole listing is
+			// hidden), so verify against any member — targetIdx -1.
+			if pw := crack7zPassword(buf, -1, pwc, b, deadline); pw != "" {
+				if dr := open7zReader(buf, pw); dr != nil {
+					// Emit members first; mark decrypted only if ≥1 payload landed, so
+					// a maxStreams cap can't sacrifice the dropper for the marker.
+					if emit7zMembers(dr, res, b, depth, deadline) {
+						markDecryptedArchive(res)
+					} else {
+						markEncryptedArchive(res)
+					}
+					return
+				}
+			}
+			// Candidates were tried and none worked. A NewReader failure on a valid 7z
+			// (magic already matched by the dispatcher) is overwhelmingly a header-
+			// encrypted archive whose listing we couldn't read — preserve the encrypted
+			// signal even though the generic parse error doesn't say "password".
+			markEncryptedArchive(res)
+			return
+		}
 		if isEncryptedErr(err) {
-			res.IsArchive = true
 			markEncryptedArchive(res)
 		}
 		return
 	}
 	res.IsArchive = true
-	for _, f := range zr.File {
+	// dec is a lazily-cracked password reader, built the first time a member fails
+	// to read and candidates are available; one password serves every member.
+	var dec *sevenzip.Reader
+	decTried := false
+	tryCrackOnce := func(targetIdx int) {
+		if !decTried {
+			decTried = true // crack once; a failed crack is not retried per member
+			// Validate the password against the member that actually failed the
+			// plaintext read (the encrypted one), not a sibling plaintext member.
+			if pw := crack7zPassword(buf, targetIdx, pwc, b, deadline); pw != "" {
+				dec = open7zReader(buf, pw)
+			}
+		}
+	}
+	for i, f := range zr.File {
 		if b.spent() || len(res.Streams) >= maxStreams || expired(deadline) {
 			break
 		}
@@ -405,20 +484,110 @@ func unpack7z(buf []byte, res *Result, b *archiveBudget, depth int, deadline tim
 		if f.UncompressedSize > maxBytesPerMember {
 			continue
 		}
-		rc, err := f.Open()
-		if err != nil {
-			// sevenzip surfaces a password/decrypt error for an AES-encrypted
-			// member (we hold no password); flag those specifically rather than
-			// lumping every member error in with plain corruption.
-			if isEncryptedErr(err) {
+		// Attempt the plaintext read first. ok=false means Open/Read failed — for a
+		// content-encrypted member the decrypt garbage trips the decompressor, which
+		// is indistinguishable from corruption here, so on !ok with candidates we
+		// fall through to a password crack. An empty member reads ok (empty plaintext)
+		// and must NOT be mistaken for encryption.
+		if data, ok := open7zMemberPlain(f); ok {
+			emitMember(data, res, b, depth, deadline)
+			continue
+		}
+		if len(pwc) == 0 {
+			// No candidates: an unreadable member might be encrypted or corrupt. The
+			// pre-feature behaviour marked encrypted only on an isEncryptedErr Open;
+			// preserve that conservative signal by re-checking the Open error.
+			if _, oerr := f.Open(); isEncryptedErr(oerr) {
 				markEncryptedArchive(res)
 			}
-			continue // encrypted/corrupt member: skip, keep the rest
+			continue
 		}
-		data := readMember(rc, f.UncompressedSize)
-		_ = rc.Close()
-		emitMember(data, res, b, depth, deadline)
+		tryCrackOnce(i)
+		if dec == nil {
+			markEncryptedArchive(res)
+			continue
+		}
+		if data, ok := openDecrypted7zMember(dec.File, i); ok {
+			// Payload before marker so a maxStreams cap can't drop the dropper.
+			emitMember(data, res, b, depth, deadline)
+			markDecryptedArchive(res)
+		} else {
+			markEncryptedArchive(res)
+		}
 	}
+}
+
+// open7zMemberPlain opens and reads a 7z member with no password, bounded by
+// maxBytesPerMember, under an unconditional recover. Returns (data, true) on a
+// clean read (data may be empty for a legitimately empty member) and (nil, false)
+// on any failure (encrypted member, corrupt stream) — the caller treats !ok as
+// "try a password crack if candidates exist".
+func open7zMemberPlain(f *sevenzip.File) (out []byte, ok bool) {
+	defer func() {
+		if recover() != nil {
+			out, ok = nil, false
+		}
+	}()
+	rc, err := f.Open()
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = rc.Close() }()
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(io.LimitReader(rc, maxBytesPerMember)); err != nil {
+		return nil, false // decrypt-garbage tripped the decompressor, or truncation
+	}
+	return buf.Bytes(), true // clean read (possibly empty for an empty member)
+}
+
+// emit7zMembers walks an already-decrypted 7z reader (the header-encrypted case,
+// where the whole listing was hidden) and emits each regular-file member. Bounded
+// by the shared budget/deadline and the per-member size cap, like unpack7z.
+func emit7zMembers(zr *sevenzip.Reader, res *Result, b *archiveBudget, depth int, deadline time.Time) (emitted bool) {
+	for i, f := range zr.File {
+		if b.spent() || len(res.Streams) >= maxStreams || expired(deadline) {
+			break
+		}
+		if f.FileInfo().IsDir() || f.UncompressedSize > maxBytesPerMember {
+			continue
+		}
+		data, ok := openDecrypted7zMember(zr.File, i)
+		if !ok || len(data) == 0 {
+			continue
+		}
+		emitMember(data, res, b, depth, deadline)
+		emitted = true
+	}
+	return emitted
+}
+
+// openDecrypted7zMember opens the member at index idx in files and reads it,
+// bounded by maxBytesPerMember, under an unconditional recover (the decrypt +
+// decompress runs on hostile input). Returns (data, true) on a clean read,
+// (nil, false) on miss / error / oversize.
+func openDecrypted7zMember(files []*sevenzip.File, idx int) (out []byte, ok bool) {
+	defer func() {
+		if recover() != nil {
+			out, ok = nil, false
+		}
+	}()
+	if idx < 0 || idx >= len(files) {
+		return nil, false
+	}
+	f := files[idx]
+	if f.FileInfo().IsDir() || f.UncompressedSize > maxBytesPerMember {
+		return nil, false
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = rc.Close() }()
+	data := readMember(rc, f.UncompressedSize)
+	if data == nil {
+		return nil, false // read/decompress failure: not a clean decrypt
+	}
+	return data, true
 }
 
 // isEncryptedErr reports whether a member Open error is an encryption/password
@@ -438,23 +607,58 @@ func isEncryptedErr(err error) bool {
 func unpackRar(buf []byte, res *Result, b *archiveBudget, depth int, deadline time.Time) {
 	rr, err := rardecode.NewReader(bytes.NewReader(buf))
 	if err != nil {
-		if isEncryptedErr(err) {
-			res.IsArchive = true
-			markEncryptedArchive(res)
+		if !isEncryptedErr(err) {
+			return
 		}
+		res.IsArchive = true
+		// A whole-archive header-encrypted RAR fails construction. With candidates,
+		// crack the archive password and walk the now-readable listing; otherwise
+		// emit ARCHIVE-ENCRYPTED.
+		if pwc := pwCandidates(res); len(pwc) > 0 {
+			if pw := crackRarPassword(buf, pwc, b, deadline); pw != "" {
+				if dr := openRarReader(buf, pw); dr != nil {
+					// Marker emitted per successfully-read member inside the walk; if
+					// the walk landed nothing (cap/deadline), fall through to mark
+					// encrypted so the signal isn't lost.
+					if emitRarMembers(dr, buf, true, res, b, depth, deadline) {
+						return
+					}
+				}
+			}
+		}
+		markEncryptedArchive(res)
 		return
 	}
 	res.IsArchive = true
+	emitRarMembers(rr, buf, false, res, b, depth, deadline)
+}
+
+// emitRarMembers walks a rardecode reader and emits each regular-file member. buf
+// is the original archive bytes (needed to re-open with a password); cracked marks
+// rr as an already-password-unlocked reader. When a per-file-encrypted member is
+// hit on a NON-cracked reader and candidates are available, it cracks the archive
+// password once and re-walks via a fresh password reader (RAR applies one password
+// per archive), decrypting this and the remaining encrypted members.
+func emitRarMembers(rr *rardecode.Reader, buf []byte, cracked bool, res *Result, b *archiveBudget, depth int, deadline time.Time) (emitted bool) {
 	for {
 		if b.spent() || len(res.Streams) >= maxStreams || expired(deadline) {
 			break
 		}
 		h, err := rr.Next()
 		if err != nil {
-			// A whole-archive header-encrypted RAR errors here (before any header
-			// with HeaderEncrypted is returned), so the h.Encrypted check below is
-			// unreachable for that case — classify the Next() error and mark.
 			if isEncryptedErr(err) {
+				// A header-encrypted RAR can surface its encryption HERE (at Next())
+				// rather than at NewReader. On a non-cracked reader with candidates,
+				// crack and re-walk via a password reader before giving up.
+				if pwc := pwCandidates(res); !cracked && len(pwc) > 0 {
+					if pw := crackRarPassword(buf, pwc, b, deadline); pw != "" {
+						if dr := openRarReader(buf, pw); dr != nil {
+							if emitRarMembers(dr, buf, true, res, b, depth, deadline) {
+								return true
+							}
+						}
+					}
+				}
 				markEncryptedArchive(res)
 			}
 			break // EOF, encrypted-header, or corrupt: stop, keep what we have
@@ -462,11 +666,59 @@ func unpackRar(buf []byte, res *Result, b *archiveBudget, depth int, deadline ti
 		if h.IsDir {
 			continue
 		}
-		// Encrypted file contents or an encrypted header (whole-archive password):
-		// no password here, so flag and skip. HeaderEncrypted typically also fails
-		// the rr.Next() above, but a per-file Encrypted member is reachable.
+		// Encrypted file contents or an encrypted header (whole-archive password).
 		if h.Encrypted || h.HeaderEncrypted {
+			if cracked {
+				// rr already carries the correct password — DON'T skip; read the
+				// member (the reader decrypts it transparently). On an oversized
+				// member or a read failure, keep the ARCHIVE-ENCRYPTED signal so the
+				// hidden-payload tell isn't silently lost.
+				if h.UnPackedSize > maxBytesPerMember {
+					markEncryptedArchive(res)
+					continue
+				}
+				var decl uint64
+				if h.UnPackedSize > 0 {
+					decl = uint64(h.UnPackedSize)
+				}
+				if data := readMember(rr, decl); data != nil {
+					// Payload before marker so a maxStreams cap can't drop the dropper.
+					emitMember(data, res, b, depth, deadline)
+					markDecryptedArchive(res)
+					emitted = true
+				} else {
+					markEncryptedArchive(res)
+				}
+				continue
+			}
+			// Non-cracked reader: crack once and re-walk through a password reader so
+			// this and the remaining encrypted members decrypt. If the cracked re-walk
+			// lands NO payload (cap/deadline stopped it before the dropper), keep the
+			// ARCHIVE-ENCRYPTED signal so the hidden-payload tell isn't lost.
+			if pwc := pwCandidates(res); len(pwc) > 0 {
+				if pw := crackRarPassword(buf, pwc, b, deadline); pw != "" {
+					if dr := openRarReader(buf, pw); dr != nil {
+						if emitRarMembers(dr, buf, true, res, b, depth, deadline) {
+							return true
+						}
+						markEncryptedArchive(res)
+						return emitted
+					}
+				}
+			}
 			markEncryptedArchive(res)
+			continue
+		}
+		// Plaintext member. On the cracked RE-WALK these were already emitted by the
+		// first (non-cracked) pass, so DON'T re-emit — re-emitting would burn the
+		// member/stream budget before the encrypted dropper is reached. Read-and-
+		// discard to keep the rardecode stream positioned, but bound it: skip an
+		// oversized sibling (past the per-member cap) outright so a hostile archive
+		// can't force repeated 16MiB inflates during the replay.
+		if cracked {
+			if h.UnPackedSize <= maxBytesPerMember {
+				_ = readMember(rr, uint64(h.UnPackedSize))
+			}
 			continue
 		}
 		if h.UnPackedSize > maxBytesPerMember {
@@ -478,5 +730,7 @@ func unpackRar(buf []byte, res *Result, b *archiveBudget, depth int, deadline ti
 		}
 		data := readMember(rr, decl)
 		emitMember(data, res, b, depth, deadline)
+		emitted = true
 	}
+	return emitted
 }

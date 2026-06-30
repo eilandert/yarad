@@ -136,6 +136,7 @@ type Scanner struct {
 	exMSG                                                             atomic.Uint64 // OLE2 buffers recognised as Outlook .msg (attachments extracted)
 	exOneNote                                                         atomic.Uint64 // buffers recognised as OneNote .one (embedded files carved)
 	exArchive                                                         atomic.Uint64 // buffers recognised as an archive (zip/gz/7z/rar/tar; members unpacked)
+	exArchiveDecrypted                                                atomic.Uint64 // archives with >=1 password-protected member decrypted via a candidate
 	exOLEPackage                                                      atomic.Uint64 // OLE2 docs with an embedded OLE Package object (Ole10Native carved)
 	exLNK                                                             atomic.Uint64 // Windows shell links (.lnk) with StringData surfaced
 	exPDF                                                             atomic.Uint64 // PDFs with FlateDecode object streams inflated
@@ -323,23 +324,24 @@ func (s *Scanner) putScanner(sc *yara.Scanner, gen *scannerGen) {
 // OLE/OOXML, how many carried macros, how often the parser failed/panicked, and
 // how many were encrypted (and thus not decryptable here).
 type ExtractMetrics struct {
-	Docs       uint64 // buffers recognised as an OLE2/OOXML container
-	Streams    uint64 // decompressed macro blobs scanned (sum across docs)
-	MacroDocs  uint64 // documents that yielded >=1 macro stream
-	Failed     uint64 // container parse attempts that errored
-	Panicked   uint64 // parser panics recovered (subset of Failed)
-	Encrypted  uint64 // ECMA-376 encrypted OOXML (not decrypted)
-	MSI        uint64 // OLE2 buffers recognised as MSI installers (streams dumped)
-	MSG        uint64 // OLE2 buffers recognised as Outlook .msg (attachments extracted)
-	OneNote    uint64 // buffers recognised as OneNote .one (embedded files carved)
-	Archive    uint64 // buffers recognised as an archive (zip/gz/7z/rar/tar; members unpacked)
-	OLEPackage uint64 // OLE2 docs with an embedded OLE Package object (Ole10Native carved)
-	LNK        uint64 // Windows shell links (.lnk) with StringData surfaced
-	PDF        uint64 // PDFs with FlateDecode object streams inflated
-	RTF        uint64 // RTF docs with \objdata embedded objects carved
-	SLK        uint64 // SYLK (.slk) spreadsheets with XLM/DDE formulas scanned
-	EncScript  uint64 // buffers with >=1 decoded MS-Script-Encoder (VBE/JSE) block
-	Decoded    uint64 // buffers with >=1 base64/hex/reversed blob from the static decode pass
+	Docs             uint64 // buffers recognised as an OLE2/OOXML container
+	Streams          uint64 // decompressed macro blobs scanned (sum across docs)
+	MacroDocs        uint64 // documents that yielded >=1 macro stream
+	Failed           uint64 // container parse attempts that errored
+	Panicked         uint64 // parser panics recovered (subset of Failed)
+	Encrypted        uint64 // ECMA-376 encrypted OOXML (not decrypted)
+	MSI              uint64 // OLE2 buffers recognised as MSI installers (streams dumped)
+	MSG              uint64 // OLE2 buffers recognised as Outlook .msg (attachments extracted)
+	OneNote          uint64 // buffers recognised as OneNote .one (embedded files carved)
+	Archive          uint64 // buffers recognised as an archive (zip/gz/7z/rar/tar; members unpacked)
+	ArchiveDecrypted uint64 // archives with >=1 password-protected member decrypted via a candidate
+	OLEPackage       uint64 // OLE2 docs with an embedded OLE Package object (Ole10Native carved)
+	LNK              uint64 // Windows shell links (.lnk) with StringData surfaced
+	PDF              uint64 // PDFs with FlateDecode object streams inflated
+	RTF              uint64 // RTF docs with \objdata embedded objects carved
+	SLK              uint64 // SYLK (.slk) spreadsheets with XLM/DDE formulas scanned
+	EncScript        uint64 // buffers with >=1 decoded MS-Script-Encoder (VBE/JSE) block
+	Decoded          uint64 // buffers with >=1 base64/hex/reversed blob from the static decode pass
 	// StreamMatches counts rule hits attributable ONLY to an extracted stream
 	// (macro/MSI/VBE), i.e. rules that did NOT already fire on the raw bytes —
 	// the direct measure of what pre-extraction adds over a raw-only scan.
@@ -355,28 +357,29 @@ type ExtractMetrics struct {
 // ExtractMetrics returns the current pre-extraction counters.
 func (s *Scanner) ExtractMetrics() ExtractMetrics {
 	return ExtractMetrics{
-		Docs:          s.exDocs.Load(),
-		Streams:       s.exStreams.Load(),
-		MacroDocs:     s.exMacroDocs.Load(),
-		Failed:        s.exFailed.Load(),
-		Panicked:      s.exPanicked.Load(),
-		Encrypted:     s.exEncrypted.Load(),
-		MSI:           s.exMSI.Load(),
-		MSG:           s.exMSG.Load(),
-		OneNote:       s.exOneNote.Load(),
-		Archive:       s.exArchive.Load(),
-		OLEPackage:    s.exOLEPackage.Load(),
-		LNK:           s.exLNK.Load(),
-		PDF:           s.exPDF.Load(),
-		RTF:           s.exRTF.Load(),
-		SLK:           s.exSLK.Load(),
-		EncScript:     s.exEncodedScript.Load(),
-		Decoded:       s.exDecoded.Load(),
-		StreamMatches: s.exStreamMatches.Load(),
-		Deduped:       s.exDeduped.Load(),
-		DocProps:      s.exDocProps.Load(),
-		XLMFold:       s.exXLMFold.Load(),
-		ExtMismatch:   s.exExtMismatch.Load(),
+		Docs:             s.exDocs.Load(),
+		Streams:          s.exStreams.Load(),
+		MacroDocs:        s.exMacroDocs.Load(),
+		Failed:           s.exFailed.Load(),
+		Panicked:         s.exPanicked.Load(),
+		Encrypted:        s.exEncrypted.Load(),
+		MSI:              s.exMSI.Load(),
+		MSG:              s.exMSG.Load(),
+		OneNote:          s.exOneNote.Load(),
+		Archive:          s.exArchive.Load(),
+		ArchiveDecrypted: s.exArchiveDecrypted.Load(),
+		OLEPackage:       s.exOLEPackage.Load(),
+		LNK:              s.exLNK.Load(),
+		PDF:              s.exPDF.Load(),
+		RTF:              s.exRTF.Load(),
+		SLK:              s.exSLK.Load(),
+		EncScript:        s.exEncodedScript.Load(),
+		Decoded:          s.exDecoded.Load(),
+		StreamMatches:    s.exStreamMatches.Load(),
+		Deduped:          s.exDeduped.Load(),
+		DocProps:         s.exDocProps.Load(),
+		XLMFold:          s.exXLMFold.Load(),
+		ExtMismatch:      s.exExtMismatch.Load(),
 	}
 }
 
@@ -1107,16 +1110,17 @@ func (m ScanMeta) cacheKey() string {
 	k := m.Filename + "\x00" + m.Extension + "\x00" + m.FileType + "\x00" + strconv.Itoa(m.Effort)
 	// Fold the per-request password candidates ONLY when present, so the default
 	// path (no candidates) yields exactly the historical key — no cache split for
-	// the 99% of traffic with the feature off. Order-independent: hash a sorted
-	// copy so {"a","b"} and {"b","a"} share a key. A fixed-width xxhash keeps the
-	// key bounded regardless of candidate count/length. Static defaults + the boot
-	// wordlist are process-constant and deliberately NOT keyed (a wordlist change =
-	// redeploy = new process = cold cache); only the per-request set is keyed.
+	// the 99% of traffic with the feature off. Hashed in TRIED ORDER, NOT sorted:
+	// the decrypt brute loop is bounded by per-input attempt caps (maxDecrypt/
+	// maxKDFDecryptAttempts), so only a PREFIX of the candidate list is actually
+	// tried — order is therefore verdict-significant, and {"pw",…fillers} must NOT
+	// share a key with {…fillers,"pw"} (one decrypts, the other hits the cap first).
+	// A fixed-width xxhash keeps the key bounded regardless of count/length. Static
+	// defaults + the boot wordlist are process-constant and deliberately NOT keyed
+	// (a wordlist change = redeploy = new process = cold cache).
 	if len(m.PWCandidates) > 0 {
-		sorted := append([]string(nil), m.PWCandidates...)
-		sort.Strings(sorted)
 		h := xxhash.New()
-		for _, c := range sorted {
+		for _, c := range m.PWCandidates {
 			_, _ = h.WriteString(c)
 			_, _ = h.Write([]byte{0})
 		}
@@ -1471,6 +1475,9 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 	}
 	if res.IsArchive {
 		s.exArchive.Add(1)
+	}
+	if res.DecryptedArchive {
+		s.exArchiveDecrypted.Add(1)
 	}
 	if res.IsOLEPackage {
 		s.exOLEPackage.Add(1)

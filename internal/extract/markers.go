@@ -38,6 +38,7 @@ var pureMarkerLiterals = map[string]struct{}{
 	"SVG-SCRIPT":              {}, // html.go
 	"SVG-EMBEDDED-PAYLOAD":    {}, // html.go
 	"ARCHIVE-ENCRYPTED":       {}, // archive.go
+	"ARCHIVE-DECRYPTED":       {}, // archivepw.go
 	"POLYGLOT-PE-ZIP":         {}, // polyglot.go
 	"XLL-ADDIN":               {}, // xll.go
 	"BASE64-PE-CARVE":         {}, // pecarve.go

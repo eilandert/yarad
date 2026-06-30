@@ -21,6 +21,20 @@ rule Archive_Encrypted : archive evasion heuristic suspicious marker
         filesize < 16MB and $marker
 }
 
+rule Archive_Decrypted : archive evasion heuristic suspicious marker
+{
+    meta:
+        author      = "mailstrix"
+        description = "Password-protected archive member cracked with a candidate password (typically scraped from the mail subject/body) — the hidden payload was recovered and is scanned separately; the body-supplied password itself is the evasion tell"
+        reference   = "https://attack.mitre.org/techniques/T1027/002/"
+        tier        = "suspicious"
+        score       = "55"
+    strings:
+        $marker = "ARCHIVE-DECRYPTED" ascii
+    condition:
+        filesize < 16MB and $marker
+}
+
 rule Polyglot_PE_ZIP : polyglot evasion heuristic malware marker
 {
     meta:

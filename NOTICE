@@ -70,6 +70,7 @@ Other statically-linked Go modules and their licenses:
    github.com/saferwall/pe                  — MIT
    github.com/bodgit/sevenzip               — BSD-3-Clause
    github.com/nwaples/rardecode/v2          — BSD-2-Clause
+   github.com/yeka/zip                       — MIT (ZipCrypto/WinZip-AES decrypt)
    github.com/Teamwork/tnef                 — MIT
    github.com/cespare/xxhash/v2             — MIT
    github.com/redis/go-redis/v9             — BSD-2-Clause

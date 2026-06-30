@@ -65,6 +65,8 @@ jobs:
         run: go test -run=x -fuzz='^FuzzHTMLSmuggling$' -fuzztime=5m ./internal/extract/
       - name: fuzz (extract — batch echo-redirect dropper)
         run: go test -run=x -fuzz='^FuzzBatchDropper$' -fuzztime=5m ./internal/extract/
+      - name: fuzz (extract — password-protected archive decrypt)
+        run: go test -run=x -fuzz='^FuzzDecryptArchive$' -fuzztime=5m ./internal/extract/
 
   # AddressSanitizer over the CGO/libyara surface: catches heap errors in our
   # go-yara usage (Scanner lifecycle, buffer passing) that -race can't. Valgrind
