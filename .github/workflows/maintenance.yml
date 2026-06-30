@@ -105,7 +105,7 @@ jobs:
           # algorithmic blow-ups (O(n)->O(n^2), lost fast-path), NOT micro-noise.
           THRESH="${PERF_REGRESSION_PCT:-50}"
           if [ ! -f "$BASE" ]; then
-            echo "::warning::no $BASE committed yet — seed it by downloading this run's"             "benchmark-results artifact and committing it as $BASE. Gate is informational this run."
+            echo "::warning::no $BASE committed yet — seed it from the benchmark-results artifact of this run; gate is informational until then"
             exit 0
           fi
           # Compare ns/op per benchmark name; fail if any is >THRESH% slower.
